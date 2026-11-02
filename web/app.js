@@ -36,6 +36,12 @@
     if (d <= 3) return { cls: 'soon-d', t: 'через ' + d + ' дн.' };
     return { cls: '', t: 'через ' + d + ' дн.' };
   }
+  function prettyName(n) {
+    var s = String(n).replace(/^(Резюме|Resume|CV)_/i, '');
+    var drop = [profile.last_name, profile.first_name, profile.middle_name, 'PM'].filter(Boolean);
+    for (var i = 0; i < 3; i++) drop.forEach(function (w) { s = s.replace(new RegExp('^' + w + '_', 'i'), ''); });
+    return s.replace(/_/g, ' ').trim() || n;
+  }
   function stKey(a) { return STMAP[a.status] ? a.status : 'ready'; }
 
   function api(method, url, body) {
@@ -106,7 +112,7 @@
       : '<button type="button" class="lnk ghost" data-act="edit" data-id="' + id + '">Добавить ссылку</button>';
     var track = a.track ? '<span class="track">' + esc(a.track) + '</span>' : '';
     var resume = '<span class="lbl m">Резюме</span>' + (a.resume
-      ? (a.resume_id ? '<a class="file lnk" href="/api/resumes/' + a.resume_id + '/file" target="_blank">' + esc(a.resume).replace(/_/g, '_<wbr>') + '</a>' : '<span class="file">' + esc(a.resume).replace(/_/g, '_<wbr>') + '</span>')
+      ? (a.resume_id ? '<a class="rlink" href="/api/resumes/' + a.resume_id + '/file" target="_blank" title="' + esc(a.resume) + '">' + esc(prettyName(a.resume)) + '</a>' : '<span class="rlink">' + esc(prettyName(a.resume)) + '</span>')
       : '<span class="role">Не указано</span>');
     var tags = '';
     if (a.cover || a.cover_text) tags += '<span class="tag">сопроводительное</span>';
@@ -127,9 +133,8 @@
     if (a.next) next += '<div class="nx">' + esc(a.next) + (a.next_at ? ' <span class="file">· ' + fmt(a.next_at) + '</span>' : '') + '</div>';
     if (due) next += '<span class="due ' + due.cls + '">' + due.t + '</span>';
     if (a.notes) next += '<p class="nt">' + esc(a.notes) + '</p>';
-    next += '<div class="row-actions"><button type="button" class="mini" data-act="edit" data-id="' + id + '">Изменить</button></div>';
 
-    return '<article class="row st-' + st + (st === 'skipped' ? ' is-skipped' : '') + '">' +
+    return '<article class="row st-' + st + (st === 'skipped' ? ' is-skipped' : '') + '" data-open="' + id + '" tabindex="0" aria-label="' + esc(a.company + ' — ' + a.role) + '">' +
       '<div class="c-main"><div class="co">' + esc(a.company) + '</div><div class="role">' + esc(a.role) + '</div><div class="meta">' + track + link + '</div></div>' +
       '<div class="c-resume">' + resume + '</div>' +
       '<div class="c-date"><span class="lbl m">Дата</span>' + date + '</div>' +
@@ -175,11 +180,20 @@
   $('#sort').addEventListener('change', function (e) { sortBy = e.target.value; try { localStorage.setItem('jh.sort', sortBy); } catch (x) {} renderApps(); });
   $('#list').addEventListener('change', function (e) { var s = e.target.closest('select[data-act="status"]'); if (s) changeStatus(+s.dataset.id, s.value); });
   $('#list').addEventListener('click', function (e) {
-    var b = e.target.closest('button[data-act]'); if (!b) return;
+    var b = e.target.closest('button[data-act]');
+    if (!b) {  // клик по строке (не по ссылке, статусу или кнопке) открывает отклик
+      var row = e.target.closest('[data-open]');
+      if (row && !e.target.closest('a, select, label, button')) openEditor(+row.dataset.open);
+      return;
+    }
     var id = +b.dataset.id;
     if (b.dataset.act === 'edit') openEditor(id);
     if (b.dataset.act === 'applied') changeStatus(id, 'applied');
     if (b.dataset.act === 'go') goApply(byId(id));
+  });
+  $('#list').addEventListener('keydown', function (e) {
+    var row = e.target.closest('[data-open]');
+    if (row && e.target === row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openEditor(+row.dataset.open); }
   });
   $('#add').addEventListener('click', function () { openEditor(null); });
 
@@ -201,7 +215,7 @@
     var groups = { base: 'Основные', tailored: 'Адаптированные' };
     Object.keys(groups).forEach(function (k) {
       var list = resumes.filter(function (r) { return r.kind === k; });
-      if (list.length) opts += '<optgroup label="' + groups[k] + '">' + list.map(function (r) { return '<option value="' + r.id + '">' + esc(r.name) + (r.is_main ? ' — основное' : '') + '</option>'; }).join('') + '</optgroup>';
+      if (list.length) opts += '<optgroup label="' + groups[k] + '">' + list.map(function (r) { return '<option value="' + r.id + '">' + esc(k === 'tailored' ? prettyName(r.name) : r.name) + (r.is_main ? ' — основное' : '') + '</option>'; }).join('') + '</optgroup>';
     });
     F('resume').innerHTML = opts;
     F('resume').value = sel || '';
@@ -331,15 +345,18 @@
       var g = ago(v.found_at);
       if (g !== last) { html += '<div class="vgroup">Найдено: ' + g + '</div>'; last = g; }
       var applied = v.state === 'applied', saved = v.state === 'saved';
-      html += '<div class="vrow' + (v.watch ? ' watch' : '') + '" data-id="' + v.id + '">' +
-        '<div><div class="vt"><a href="' + esc(safeUrl(v.url)) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a></div>' +
-        '<div class="vm"><span class="vc">' + esc(v.company) + '</span>' + (v.meta && v.source === 'hh.ru' ? '<span>' + esc(v.meta.slice(0, 140)) + '</span>' : '') +
-        '<span class="src">' + esc(v.source) + '</span><span class="score' + (v.score >= 30 ? ' hi' : '') + '" title="Насколько подходит под ваш профиль">' + v.score + '</span></div></div>' +
+      var src = v.source && v.source.toLowerCase() !== String(v.company).toLowerCase() ? '<span class="src">' + esc(v.source) + '</span>' : '';
+      var meta = v.meta && v.source === 'hh.ru' ? '<span>' + esc(v.meta.split(' · ').slice(0, 3).join(' · ')) + '</span>' : '';
+      var fit = v.score >= 35 ? '<span class="fit">подходит</span>' : '';
+      var mine = v.watch && v.source === 'hh.ru' ? '<span class="mine">ваш список</span>' : '';
+      html += '<div class="vrow" data-id="' + v.id + '" tabindex="-1">' +
+        '<div class="vtext"><div class="vt"><a href="' + esc(safeUrl(v.url)) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a>' + fit + '</div>' +
+        '<div class="vm"><span class="vc">' + esc(v.company) + '</span>' + meta + src + mine + '</div></div>' +
         '<div class="va">' +
         (applied ? '<span class="tag">отклик есть</span>' :
-          '<button class="btn primary" data-v="apply">' + (saved ? 'Открыть и заполнить' : 'Откликнуться') + '</button>' +
-          '<button class="mini" data-v="prep" title="Завести отклик и адаптировать резюме и письмо с ИИ">С адаптацией</button>') +
-        (v.state === 'hidden' ? '<button class="mini" data-v="unhide">Вернуть</button>' : '<button class="mini ghost" data-v="hide">Скрыть</button>') +
+          '<button class="mini ghost vhide" data-v="' + (v.state === 'hidden' ? 'unhide' : 'hide') + '">' + (v.state === 'hidden' ? 'Вернуть' : 'Скрыть') + '</button>' +
+          '<button class="mini vprep" data-v="prep" title="Завести отклик и адаптировать резюме и письмо с ИИ">С адаптацией</button>' +
+          '<button class="btn vgo" data-v="apply">' + (saved ? 'Открыть и заполнить' : 'Откликнуться') + '</button>') +
         '</div></div>';
     });
     if (list.length > vacShown) html += '<button class="btn more" id="vmore">Показать ещё ' + Math.min(120, list.length - vacShown) + ' из ' + (list.length - vacShown) + '</button>';
@@ -379,11 +396,6 @@
   /* =================== РЕЗЮМЕ =================== */
   function loadResumesData() { return api('GET', '/api/resumes').then(function (d) { resumes = d; $('#n-res').textContent = d.length || ''; }); }
   function loadResumes() { return loadResumesData().then(renderResumes); }
-  function prettyName(n) {
-    var s = String(n).replace(/^(Резюме|Resume|CV)_/i, '');
-    [profile.last_name, profile.first_name, 'PM'].forEach(function (w) { if (w) s = s.replace(new RegExp('^' + w + '_', 'i'), ''); });
-    return s.replace(/_/g, ' ').trim() || n;
-  }
   function renderResumes() {
     var html = '';
     [['base', 'Основные'], ['tailored', 'Адаптированные под вакансии']].forEach(function (g) {
@@ -392,8 +404,7 @@
       html += '<div class="rsec">' + g[1] + ' · ' + list.length + '</div>';
       html += list.map(function (r) {
         return '<button class="rcard' + (r.is_main ? ' main' : '') + '" data-r="' + r.id + '"><span class="rn">' + esc(r.kind === 'tailored' ? prettyName(r.name) : r.name) + '</span>' +
-          '<span class="rm">' + (r.is_main ? 'Основное · ' : '') + (r.used ? 'в ' + r.used + ' ' + plural(r.used, ['отклике', 'откликах', 'откликах']) + ' · ' : '') + fmt(r.created_at.slice(0, 10)) + '</span>' +
-          '<span class="rm file">' + esc(r.file) + '</span></button>';
+          '<span class="rm">' + (r.is_main ? '<span class="main-tag">основное</span> · ' : '') + (r.used ? 'в ' + r.used + ' ' + plural(r.used, ['отклике', 'откликах', 'откликах']) + ' · ' : '') + fmt(r.created_at.slice(0, 10)) + '</span></button>';
       }).join('');
     });
     $('#rlist').innerHTML = html || '<div class="state"><strong>Резюме нет</strong>Загрузите PDF или DOCX.</div>';
@@ -478,10 +489,12 @@
   });
 
   /* ---------- старт ---------- */
-  Promise.all([loadApps(), loadResumesData(), loadProfileData(), loadVacStats()]).catch(function (e) {
+  Promise.all([loadProfileData(), loadResumesData(), loadVacStats()]).then(loadApps).catch(function (e) {
     $('#lede').textContent = 'Сервер не отвечает: ' + e.message;
   });
   var tab = 'apps'; try { tab = localStorage.getItem('jh.tab') || 'apps'; } catch (e) {}
+  var fromHash = location.hash.replace('#', '');
+  if (['apps', 'vac', 'res', 'prof'].indexOf(fromHash) !== -1) tab = fromHash;
   showTab(tab);
   // данные могли поменяться из расширения
   window.addEventListener('focus', function () { loadApps(); if (!$('#v-vac').hidden) loadVac(); });

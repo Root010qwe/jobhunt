@@ -6,34 +6,47 @@
 .tabs button { border: 0; background: transparent; padding: 0.45rem 0.8rem; border-radius: 8px; color: var(--muted); font-weight: 500; }
 .tabs button[aria-selected="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--line); }
 .tabs .n { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); }
-.tabs .badge:not(:empty) { background: var(--accent); color: var(--accent-ink); border-radius: 99px; padding: 0 0.45rem; margin-left: 0.15rem; }
+.tabs .badge:not(:empty) { background: var(--accent); color: var(--accent-ink); border-radius: 99px; padding: 0.1rem 0.45rem; margin-left: 0.15rem; line-height: 1.2; }
 
 .top-actions { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
 .run-st { color: var(--muted); font-size: 0.8125rem; }
 .tgl { align-self: end; padding-bottom: 0.55rem; }
 
-/* лента вакансий */
+/* лента вакансий: строки одного веса, действие проявляется на строке под курсором */
 .vlist { display: grid; gap: 0.5rem; }
 .vgroup { font-family: var(--font-display); font-weight: 500; font-size: 0.8125rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0.9rem 0 0.1rem; }
-.vrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem 1rem; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 1rem; }
-.vrow.watch { border-left: 3px solid var(--accent); }
-.vrow .vt { font-family: var(--font-display); font-weight: 500; font-size: 1rem; overflow-wrap: anywhere; }
-.vrow .vt a { color: inherit; text-decoration: none; }
+.vrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem 1rem; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.8rem 0.8rem 1rem; transition: border-color .15s ease, box-shadow .15s ease; }
+.vrow:hover, .vrow:focus-within { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 1px 3px rgb(0 0 0 / .05); }
+.vtext { min-width: 0; }
+.vrow .vt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; font-family: var(--font-display); font-weight: 500; font-size: 1rem; line-height: 1.3; }
+.vrow .vt a { color: inherit; text-decoration: none; overflow-wrap: anywhere; }
 .vrow .vt a:hover { text-decoration: underline; text-underline-offset: 3px; }
-.vrow .vc { font-weight: 600; }
-.vrow .vm { color: var(--muted); font-size: 0.8125rem; display: flex; flex-wrap: wrap; gap: 0.2rem 0.75rem; margin-top: 0.2rem; }
-.vrow .va { display: flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end; }
-.src { font-family: var(--font-mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.score { font-family: var(--font-mono); font-size: 0.72rem; border-radius: 4px; padding: 0 0.35rem; background: var(--surface-2); border: 1px solid var(--line); }
-.score.hi { background: var(--s-offer-bg); color: var(--s-offer-fg); border-color: transparent; }
+.vrow .vm { color: var(--muted); font-size: 0.8125rem; line-height: 1.3; display: flex; flex-wrap: wrap; gap: 0.2rem 0.75rem; margin-top: 0.3rem; }
+.vrow .vc { font-weight: 600; color: var(--ink); }
+.vrow .src, .vrow .mine { color: var(--muted); }
+.vrow .mine { color: var(--accent); }
+.fit { font-family: var(--font-body); font-size: 0.75rem; font-weight: 500; color: var(--s-offer-fg); background: var(--s-offer-bg); border-radius: 99px; padding: 0.05rem 0.5rem; white-space: nowrap; }
+.vrow .va { display: flex; gap: 0.5rem; align-items: center; justify-content: flex-end; }
+.vgo { white-space: nowrap; }
+.vrow:hover .vgo, .vrow:focus-within .vgo { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.vprep, .vhide { opacity: 0; transition: opacity .15s ease; }
+.vrow:hover .vprep, .vrow:hover .vhide, .vrow:focus-within .vprep, .vrow:focus-within .vhide { opacity: 1; }
+@media (hover: none) { .vprep, .vhide { opacity: 1; } }
 .more { justify-self: start; }
 @media (max-width: 40rem) { .vrow { grid-template-columns: 1fr; } .vrow .va { justify-content: flex-start; } }
+
+/* трекер: строка целиком открывает отклик */
+.row[data-open] { cursor: pointer; }
+.row[data-open]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.rlink { color: var(--ink); font-size: 0.875rem; text-decoration: none; overflow-wrap: anywhere; }
+a.rlink:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.nt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 /* резюме */
 .rgrid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); }
 .rcard { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.9rem 1rem; display: grid; gap: 0.35rem; align-content: start; cursor: pointer; text-align: left; }
 .rcard:hover { background: var(--surface-2); }
-.rcard.main { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.rcard.main { box-shadow: 0 1px 3px rgb(0 0 0 / .06); }
 .rcard .rn { font-family: var(--font-display); font-weight: 500; overflow-wrap: anywhere; }
 .rcard .rm { color: var(--muted); font-size: 0.8125rem; }
 .rsec { grid-column: 1 / -1; font-family: var(--font-display); font-weight: 500; font-size: 0.8125rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-top: 0.5rem; }
@@ -55,5 +68,6 @@ a.mini { text-decoration: none; color: inherit; display: inline-flex; align-item
 code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surface-2); padding: 0 0.25rem; border-radius: 4px; }
 .check { display: flex; gap: 0.5rem; align-items: center; }
 .f input[type="number"], .f input[type="email"], .f input[type="tel"] { width: 100%; min-width: 0; border: 1px solid var(--line); background: var(--surface-2); border-radius: 6px; padding: 0.55rem 0.65rem; }
-.rcard .file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.main-tag { color: var(--accent); font-weight: 500; }
 .rcard { min-width: 0; }
+.lede .run-st { font-size: inherit; }
