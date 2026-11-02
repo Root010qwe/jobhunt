@@ -1,0 +1,13 @@
+# личные данные: база, резюме, профиль
+data/
+demo-data/
+*.db
+# окружение
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# инструменты агентов
+.agents/
+.claude/
+skills-lock.json

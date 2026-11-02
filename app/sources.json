@@ -1,0 +1,339 @@
+{
+ "_comment": "Источники для бота. pattern — регулярка для ссылок на вакансию. Добавить компанию: скопируйте блок и поменяйте url и pattern.",
+ "keywords": {
+  "include": [
+   "продукт",
+   "product",
+   "продакт",
+   "проект",
+   "project",
+   "проджект",
+   "владелец продукта",
+   "owner",
+   "аналитик",
+   "analyst",
+   "presale",
+   "пресейл",
+   "growth",
+   "pm",
+   "cpo",
+   "delivery",
+   "scrum",
+   "agile",
+   "ai-менеджер",
+   "ai manager"
+  ],
+  "exclude": [
+   "senior",
+   "lead",
+   "head",
+   "старш",
+   "ведущ",
+   "руковод",
+   "директор",
+   "director",
+   "chief",
+   "principal",
+   "главн",
+   "разработчик",
+   "developer",
+   "engineer",
+   "инженер",
+   "qa",
+   "тестиров",
+   "дизайнер",
+   "designer",
+   "devops",
+   "бухгалтер",
+   "юрист",
+   "водитель",
+   "курьер",
+   "кассир",
+   "оператор",
+   "продавец",
+   "кладовщ",
+   "сборщ",
+   "бармен",
+   "повар",
+   "грузчик",
+   "мерчендайзер",
+   "1с",
+   "sre",
+   "архитектор",
+   "системн",
+   "финансов",
+   "finance",
+   "банковск",
+   "клиентск",
+   "продаж",
+   "sales",
+   "поддержк",
+   "support",
+   "безопасност",
+   "иб ",
+   "кредитн",
+   "маркетолог",
+   "smm",
+   "hr",
+   "рекрутер",
+   "бизнес-партнер",
+   "категорийн",
+   "закупк",
+   "логист",
+   "склад",
+   "экономист",
+   "страхов",
+   "ипотечн",
+   "call",
+   "колл",
+   "врач",
+   "медицин",
+   "учител",
+   "преподават",
+   "middle+",
+   "middle/middle",
+   "тимлид",
+   "teamlead",
+   "team lead",
+   "group product",
+   "architect",
+   "technician",
+   "staff",
+   "security",
+   "риск",
+   "отчетност",
+   "антифрод",
+   "antifraud",
+   "marketer",
+   "payments"
+  ],
+  "boost": [
+   "junior",
+   "младш",
+   "стаж",
+   "intern",
+   "trainee",
+   "начинающ",
+   "ai",
+   "ии",
+   "llm",
+   "ml",
+   "gen ai",
+   "genai",
+   "продуктовый аналитик",
+   "product analyst",
+   "менеджер продукта",
+   "product manager",
+   "продакт",
+   "проектный менеджер",
+   "project manager",
+   "менеджер проект"
+  ]
+ },
+ "hh": {
+  "enabled": true,
+  "area": [
+   1
+  ],
+  "experience": [
+   "noExperience",
+   "between1And3"
+  ],
+  "queries": [
+   "product manager",
+   "менеджер продукта",
+   "junior product manager",
+   "продуктовый аналитик",
+   "AI product manager",
+   "project manager",
+   "менеджер проектов IT",
+   "стажер менеджер продукта",
+   "владелец продукта"
+  ],
+  "pages": 2
+ },
+ "companies": [
+  {
+   "name": "Яндекс",
+   "url": "https://yandex.ru/jobs/vacancies?text=менеджер продукта",
+   "extra": [
+    "https://yandex.ru/jobs/vacancies?text=продуктовый аналитик",
+    "https://yandex.ru/jobs/vacancies?text=менеджер проектов",
+    "https://yandex.ru/jobs/vacancies?text=стажёр"
+   ],
+   "pattern": "/jobs/vacancies/[^/?#]+-\\d+"
+  },
+  {
+   "name": "VK",
+   "url": "https://team.vk.company/vacancy/?search=менеджер продукта",
+   "extra": [
+    "https://team.vk.company/vacancy/?search=продуктовый аналитик",
+    "https://team.vk.company/vacancy/?search=менеджер проектов",
+    "https://team.vk.company/vacancy/?search=junior"
+   ],
+   "pattern": "/vacancy/\\d+/?$"
+  },
+  {
+   "name": "Т-Банк",
+   "url": "https://www.tbank.ru/career/it/vacancies/product-management/",
+   "extra": [
+    "https://www.tbank.ru/career/it/vacancies/analytics/",
+    "https://www.tbank.ru/career/it/vacancies/project-management/"
+   ],
+   "pattern": "/career/[^/]+/vacancy/"
+  },
+  {
+   "name": "Альфа-Банк",
+   "url": "https://job.alfabank.ru/vacancies/digital",
+   "pattern": "/vacancies/[^/]+/[^/]+/[^?#]+_\\d+"
+  },
+  {
+   "name": "МТС",
+   "url": "https://job.mts.ru/vacancies?search=менеджер продукта",
+   "extra": [
+    "https://job.mts.ru/vacancies?search=аналитик",
+    "https://job.mts.ru/vacancies?search=проект",
+    "https://job.mts.ru/programs"
+   ],
+   "pattern": "/vacancy/\\d+"
+  },
+  {
+   "name": "МегаФон",
+   "url": "https://job.megafon.ru/vacancy/all/any?q=продукт",
+   "extra": [
+    "https://job.megafon.ru/vacancy/all/any?q=проект",
+    "https://job.megafon.ru/vacancy/all/any?q=стажер"
+   ],
+   "pattern": "/vacancy/[^/]+/[^/]+/[^/?#]+-\\d+"
+  },
+  {
+   "name": "X5 Tech",
+   "url": "https://x5.tech/vacancy",
+   "pattern": "/vacancy/[0-9a-f-]{36}"
+  },
+  {
+   "name": "2ГИС",
+   "url": "https://job.2gis.ru/vacancies",
+   "pattern": "/vacancies/[a-z_]+/\\d+"
+  },
+  {
+   "name": "Авито",
+   "url": "https://career.avito.com/vacancies/?q=&action=filter&direction=upravlenie-produktom",
+   "extra": [
+    "https://career.avito.com/vacancies/?q=&action=filter&direction=analitika",
+    "https://career.avito.com/vacancies/?q=&action=filter&trainee=Y"
+   ],
+   "pattern": "/vacancies/[^/]+/\\d+/?"
+  },
+  {
+   "name": "Lamoda",
+   "url": "https://job.lamoda.ru/vacancies",
+   "pattern": "/vacancies/(?:[^/]+/)?[^/?#]+--\\d+"
+  },
+  {
+   "name": "Kaspersky",
+   "url": "https://careers.kaspersky.ru/vacancies",
+   "pattern": "/vacancy/\\d+"
+  },
+  {
+   "name": "Т1",
+   "url": "https://career.t1.ru/vacancies",
+   "pattern": "vacancy-detail\\?id=\\d+"
+  },
+  {
+   "name": "Winline",
+   "url": "https://rabota.winline.ru/vacancies",
+   "pattern": "/vacancy/[^/?#]+"
+  },
+  {
+   "name": "PARI",
+   "url": "https://pariteam.ru/",
+   "pattern": "/vacancies/[^/?#]+/?$"
+  },
+  {
+   "name": "Островок",
+   "url": "https://career.ostrovok.ru/vacancy",
+   "pattern": "/vacancy/\\d+"
+  },
+  {
+   "name": "Контур",
+   "url": "https://kontur.ru/career/vacancies",
+   "pattern": "/career/vacancies/\\d+"
+  },
+  {
+   "name": "Иви",
+   "url": "https://corp.ivi.ru/vacancies/",
+   "pattern": "/vacancy/[^/?#]+/?$"
+  },
+  {
+   "name": "Ростелеком",
+   "url": "https://job.rt.ru/search",
+   "pattern": "/vacancy/\\d+"
+  },
+  {
+   "name": "Nebius",
+   "url": "https://careers.nebius.com/?category=Product",
+   "pattern": "/job\\?gh_jid=\\d+"
+  },
+  {
+   "name": "Azur Games",
+   "url": "https://azurgames.com/ru/jobs/?profarea=gameDesign,management&experience=junior",
+   "pattern": "/jobs/[^/?#]+/?$"
+  },
+  {
+   "name": "Playrix",
+   "url": "https://playrix.com/job/open",
+   "pattern": "/job/open/[^/]+/[^/?#]+"
+  },
+  {
+   "name": "Higgsfield",
+   "url": "https://jobs.ashbyhq.com/higgsfieldai",
+   "pattern": "jobs\\.ashbyhq\\.com/higgsfieldai/[0-9a-f-]{36}$"
+  }
+ ],
+ "watchlist_hh": [
+  "Ozon",
+  "Озон",
+  "Wildberries",
+  "RWB",
+  "Сбер",
+  "ОТП",
+  "СПБ Биржа",
+  "Crezu",
+  "BetBoom",
+  "Лига Ставок",
+  "Фонбет",
+  "Самокат",
+  "Детский мир",
+  "ВсеИнструменты",
+  "Okkam",
+  "Альпина",
+  "Центральный университет",
+  "karpov",
+  "Playerok",
+  "Mars",
+  "Купер",
+  "Точка",
+  "Тинькофф",
+  "Яндекс",
+  "VK",
+  "МТС",
+  "МегаФон",
+  "X5",
+  "2ГИС",
+  "Авито",
+  "Lamoda",
+  "Kaspersky",
+  "Лаборатория Касперского",
+  "Т1",
+  "Winline",
+  "PARI",
+  "Иви",
+  "Ростелеком",
+  "Контур",
+  "Альфа",
+  "Т-Банк",
+  "Авиасейлс",
+  "Островок"
+ ]
+}

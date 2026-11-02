@@ -1,0 +1,488 @@
+(function () {
+  'use strict';
+
+  var ST = [
+    { k: 'ready', t: 'Готово к подаче' }, { k: 'applied', t: 'Подано' }, { k: 'screening', t: 'Скрининг' },
+    { k: 'interview', t: 'Интервью' }, { k: 'test', t: 'Тестовое' }, { k: 'waiting', t: 'Жду ответа' },
+    { k: 'offer', t: 'Оффер' }, { k: 'rejected', t: 'Отказ' }, { k: 'skipped', t: 'Не подаю' }
+  ];
+  var STMAP = {}; ST.forEach(function (s) { STMAP[s.k] = s; });
+  var WEIGHT = { offer: 0, interview: 1, test: 2, waiting: 3, screening: 4, applied: 5, ready: 6, rejected: 7, skipped: 8 };
+  var ACTIVE = { applied: 1, screening: 1, interview: 1, test: 1, waiting: 1 };
+
+  var $ = function (s) { return document.querySelector(s); };
+  var apps = [], resumes = [], profile = {};
+  var filter = 'all', sortBy = 'act', query = '';
+  var editing = null, delArmed = false;
+  try { filter = localStorage.getItem('jh.filter') || 'all'; sortBy = localStorage.getItem('jh.sort') || 'act'; } catch (e) {}
+  $('#sort').value = sortBy;
+
+  /* ---------- утилиты ---------- */
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function safeUrl(u) { return /^https?:\/\/[^\s"<>]+$/i.test(u || '') ? u : ''; }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function todayISO() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function isISO(s) { return /^\d{4}-\d{2}-\d{2}$/.test(s || ''); }
+  function dayNum(iso) { var p = iso.split('-').map(Number); return Math.round(Date.UTC(p[0], p[1] - 1, p[2]) / 86400000); }
+  function diffDays(iso) { return dayNum(iso) - dayNum(todayISO()); }
+  function fmt(iso) { if (!isISO(iso)) return ''; var p = iso.split('-'); return p[2] + '.' + p[1] + (p[0] !== String(new Date().getFullYear()) ? '.' + p[0].slice(2) : ''); }
+  function plural(n, f) { var a = Math.abs(n) % 100, b = a % 10; if (a > 10 && a < 20) return f[2]; if (b > 1 && b < 5) return f[1]; if (b === 1) return f[0]; return f[2]; }
+  function dueInfo(iso) {
+    if (!isISO(iso)) return null;
+    var d = diffDays(iso);
+    if (d < 0) return { cls: 'late', t: 'просрочено на ' + (-d) + ' дн.' };
+    if (d === 0) return { cls: 'soon-d', t: 'сегодня' };
+    if (d === 1) return { cls: 'soon-d', t: 'завтра' };
+    if (d <= 3) return { cls: 'soon-d', t: 'через ' + d + ' дн.' };
+    return { cls: '', t: 'через ' + d + ' дн.' };
+  }
+  function stKey(a) { return STMAP[a.status] ? a.status : 'ready'; }
+
+  function api(method, url, body) {
+    var opt = { method: method, headers: {} };
+    if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+    return fetch(url, opt).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        if (!r.ok) throw new Error(d.detail || ('Ошибка ' + r.status));
+        return d;
+      });
+    });
+  }
+
+  var toastTimer = null;
+  function toast(msg, undo) {
+    var t = $('#toast'); t.textContent = '';
+    var span = document.createElement('span'); span.textContent = msg; t.appendChild(span);
+    if (undo) {
+      var b = document.createElement('button'); b.type = 'button'; b.textContent = 'Отменить';
+      b.addEventListener('click', function () { t.hidden = true; undo(); }); t.appendChild(b);
+    }
+    t.hidden = false; clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.hidden = true; }, 6500);
+  }
+
+  /* ---------- вкладки ---------- */
+  function showTab(name) {
+    document.querySelectorAll('.tabs button').forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.tab === name)); });
+    document.querySelectorAll('.view').forEach(function (v) { v.hidden = v.id !== 'v-' + name; });
+    try { localStorage.setItem('jh.tab', name); } catch (e) {}
+    if (name === 'vac') loadVac();
+    if (name === 'res') loadResumes();
+    if (name === 'prof') loadProfile();
+  }
+  document.querySelectorAll('.tabs button').forEach(function (b) { b.addEventListener('click', function () { showTab(b.dataset.tab); }); });
+
+  /* =================== ОТКЛИКИ =================== */
+  function loadApps() {
+    return api('GET', '/api/apps').then(function (d) { apps = d; renderApps(); });
+  }
+  function byId(id) { return apps.find(function (a) { return a.id === id; }); }
+
+  function changeStatus(id, status) {
+    var a = byId(id); if (!a || a.status === status) return;
+    var prev = a.status;
+    api('PATCH', '/api/apps/' + id, { status: status }).then(function (n) {
+      Object.assign(a, n); renderApps();
+      toast('Статус: ' + STMAP[status].t, function () {
+        api('PATCH', '/api/apps/' + id, { status: prev }).then(function (m) { Object.assign(a, m); renderApps(); });
+      });
+    }).catch(function (e) { toast('Не сохранилось: ' + e.message); });
+  }
+
+  function visibleApps() {
+    var arr = apps.slice(), q = query.trim().toLowerCase();
+    if (filter !== 'all') arr = arr.filter(function (a) { return stKey(a) === filter; });
+    if (q) arr = arr.filter(function (a) { return [a.company, a.role, a.resume, a.test, a.notes, a.next, a.track].join(' ').toLowerCase().indexOf(q) !== -1; });
+    var key = function (a) { return a.applied_date || a.prep_date || ''; };
+    if (sortBy === 'co') arr.sort(function (a, b) { return String(a.company).localeCompare(String(b.company), 'ru') || key(b).localeCompare(key(a)); });
+    else if (sortBy === 'new') arr.sort(function (a, b) { return key(b).localeCompare(key(a)) || b.id - a.id; });
+    else arr.sort(function (a, b) { return WEIGHT[stKey(a)] - WEIGHT[stKey(b)] || key(b).localeCompare(key(a)); });
+    return arr;
+  }
+
+  function rowHtml(a) {
+    var st = stKey(a), id = a.id, url = safeUrl(a.link);
+    var link = url ? '<a class="lnk" href="' + esc(url) + '" target="_blank" rel="noopener">Вакансия ↗</a>'
+      : '<button type="button" class="lnk ghost" data-act="edit" data-id="' + id + '">Добавить ссылку</button>';
+    var track = a.track ? '<span class="track">' + esc(a.track) + '</span>' : '';
+    var resume = '<span class="lbl m">Резюме</span>' + (a.resume
+      ? (a.resume_id ? '<a class="file lnk" href="/api/resumes/' + a.resume_id + '/file" target="_blank">' + esc(a.resume).replace(/_/g, '_<wbr>') + '</a>' : '<span class="file">' + esc(a.resume).replace(/_/g, '_<wbr>') + '</span>')
+      : '<span class="role">Не указано</span>');
+    var tags = '';
+    if (a.cover || a.cover_text) tags += '<span class="tag">сопроводительное</span>';
+    if (a.test) tags += '<span class="tag" title="' + esc(a.test) + '">тестовое</span>';
+    if (tags) resume += '<div class="tags">' + tags + '</div>';
+
+    var date = a.applied_date ? '<span class="dt strong">' + fmt(a.applied_date) + '</span><span class="dt-l">подано</span>'
+      : a.prep_date ? '<span class="dt">' + fmt(a.prep_date) + '</span><span class="dt-l">материалы готовы</span>'
+      : '<span class="dt-l">дата не указана</span>';
+
+    var pill = '<label class="pill"><span class="dot" aria-hidden="true"></span><select data-act="status" data-id="' + id + '" aria-label="Статус: ' + esc(a.company) + '">' +
+      ST.map(function (s) { return '<option value="' + s.k + '"' + (s.k === st ? ' selected' : '') + '>' + s.t + '</option>'; }).join('') + '</select></label>';
+    var quick = st === 'ready' ? (url ? '<button type="button" class="mini" data-act="go" data-id="' + id + '">Открыть и заполнить</button>' : '') +
+      '<button type="button" class="mini" data-act="applied" data-id="' + id + '">Подал сегодня</button>' : '';
+
+    var due = (st !== 'rejected' && st !== 'skipped') ? dueInfo(a.next_at) : null;
+    var next = '<span class="lbl m">Дальше</span>';
+    if (a.next) next += '<div class="nx">' + esc(a.next) + (a.next_at ? ' <span class="file">· ' + fmt(a.next_at) + '</span>' : '') + '</div>';
+    if (due) next += '<span class="due ' + due.cls + '">' + due.t + '</span>';
+    if (a.notes) next += '<p class="nt">' + esc(a.notes) + '</p>';
+    next += '<div class="row-actions"><button type="button" class="mini" data-act="edit" data-id="' + id + '">Изменить</button></div>';
+
+    return '<article class="row st-' + st + (st === 'skipped' ? ' is-skipped' : '') + '">' +
+      '<div class="c-main"><div class="co">' + esc(a.company) + '</div><div class="role">' + esc(a.role) + '</div><div class="meta">' + track + link + '</div></div>' +
+      '<div class="c-resume">' + resume + '</div>' +
+      '<div class="c-date"><span class="lbl m">Дата</span>' + date + '</div>' +
+      '<div class="c-status">' + pill + quick + '</div>' +
+      '<div class="c-next">' + next + '</div></article>';
+  }
+
+  function renderApps() {
+    var counts = {}, total = apps.length;
+    apps.forEach(function (a) { var k = stKey(a); counts[k] = (counts[k] || 0) + 1; });
+    $('#bar').innerHTML = ST.filter(function (s) { return counts[s.k]; }).map(function (s) { return '<span class="seg st-' + s.k + '" style="flex:' + counts[s.k] + ' 1 0"></span>'; }).join('');
+    var chips = '<button type="button" class="chip" data-f="all" aria-pressed="' + (filter === 'all') + '"><span class="n">' + total + '</span> Все</button>';
+    ST.forEach(function (s) {
+      if (!counts[s.k] && filter !== s.k) return;
+      chips += '<button type="button" class="chip st-' + s.k + '" data-f="' + s.k + '" aria-pressed="' + (filter === s.k) + '"><span class="dot"></span>' + s.t + ' <span class="n">' + (counts[s.k] || 0) + '</span></button>';
+    });
+    $('#chips').innerHTML = chips;
+    var active = 0; ST.forEach(function (s) { if (ACTIVE[s.k]) active += counts[s.k] || 0; });
+    $('#lede').textContent = total + ' ' + plural(total, ['отклик', 'отклика', 'откликов']) + '. В процессе ' + active +
+      ', ждут подачи ' + (counts.ready || 0) + ', отказов ' + (counts.rejected || 0) + (counts.offer ? ', офферов ' + counts.offer : '') + '.';
+    $('#n-apps').textContent = total || '';
+
+    var soon = apps.filter(function (a) { var s = stKey(a); return isISO(a.next_at) && s !== 'rejected' && s !== 'skipped' && s !== 'offer'; })
+      .sort(function (a, b) { return a.next_at.localeCompare(b.next_at); }).slice(0, 4);
+    $('#soon').hidden = !soon.length;
+    $('#soon-list').innerHTML = soon.map(function (a) {
+      var d = dueInfo(a.next_at);
+      return '<li><span class="when">' + fmt(a.next_at) + '</span><strong>' + esc(a.company) + '</strong><span>' + esc(a.next || a.role) + '</span>' + (d ? '<span class="due ' + d.cls + '">' + d.t + '</span>' : '') + '</li>';
+    }).join('');
+
+    var arr = visibleApps();
+    $('#list').innerHTML = !total ? '<div class="state"><strong>Откликов пока нет</strong>Нажмите «Добавить отклик» или откликнитесь на вакансию из вкладки «Куда откликнуться».</div>'
+      : arr.length ? arr.map(rowHtml).join('') : '<div class="state"><strong>Ничего не найдено</strong>Сбросьте фильтр по статусу или очистите поиск.</div>';
+  }
+
+  $('#chips').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-f]'); if (!b) return;
+    filter = b.dataset.f === filter && filter !== 'all' ? 'all' : b.dataset.f;
+    try { localStorage.setItem('jh.filter', filter); } catch (x) {}
+    renderApps();
+  });
+  $('#q').addEventListener('input', function (e) { query = e.target.value; renderApps(); });
+  $('#sort').addEventListener('change', function (e) { sortBy = e.target.value; try { localStorage.setItem('jh.sort', sortBy); } catch (x) {} renderApps(); });
+  $('#list').addEventListener('change', function (e) { var s = e.target.closest('select[data-act="status"]'); if (s) changeStatus(+s.dataset.id, s.value); });
+  $('#list').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-act]'); if (!b) return;
+    var id = +b.dataset.id;
+    if (b.dataset.act === 'edit') openEditor(id);
+    if (b.dataset.act === 'applied') changeStatus(id, 'applied');
+    if (b.dataset.act === 'go') goApply(byId(id));
+  });
+  $('#add').addEventListener('click', function () { openEditor(null); });
+
+  /* ---------- отклик в один клик ---------- */
+  function goApply(a) {
+    if (!a || !safeUrl(a.link)) { toast('У отклика нет ссылки на вакансию'); return; }
+    // расширение узнает отклик по адресу страницы и заполнит форму
+    window.open(a.link, '_blank', 'noopener');
+    toast('Открыл вакансию. Расширение заполнит форму — проверьте и отправьте.');
+  }
+
+  /* ---------- панель отклика ---------- */
+  var F = function (n) { return $('#f-' + n); };
+  F('status').innerHTML = ST.map(function (s) { return '<option value="' + s.k + '">' + s.t + '</option>'; }).join('');
+  var FIELDS = ['company', 'role', 'track', 'status', 'link', 'cover_text', 'test', 'prep_date', 'applied_date', 'next', 'next_at', 'notes'];
+
+  function fillResumeSelect(sel) {
+    var opts = '<option value="">Не указано</option>';
+    var groups = { base: 'Основные', tailored: 'Адаптированные' };
+    Object.keys(groups).forEach(function (k) {
+      var list = resumes.filter(function (r) { return r.kind === k; });
+      if (list.length) opts += '<optgroup label="' + groups[k] + '">' + list.map(function (r) { return '<option value="' + r.id + '">' + esc(r.name) + (r.is_main ? ' — основное' : '') + '</option>'; }).join('') + '</optgroup>';
+    });
+    F('resume').innerHTML = opts;
+    F('resume').value = sel || '';
+  }
+
+  function openEditor(id) {
+    var a = id ? byId(id) : { status: 'ready', track: 'Работа', prep_date: todayISO() };
+    editing = id ? a : null;
+    FIELDS.forEach(function (k) { F(k).value = a[k] || ''; });
+    F('status').value = stKey(a);
+    var ensure = resumes.length ? Promise.resolve() : loadResumesData();
+    ensure.then(function () {
+      var main = resumes.find(function (r) { return r.is_main; });
+      fillResumeSelect(a.resume_id || (!id && main ? main.id : ''));
+    });
+    $('#f-hist').textContent = (a.history && a.history.length) ? a.history.map(function (l) { return (STMAP[l.s] ? STMAP[l.s].t : l.s) + ' ' + fmt(l.at); }).join(' → ') : 'Пока пусто';
+    $('#form-err').textContent = ''; $('#tailor-st').textContent = '';
+    delArmed = false; $('#del').textContent = 'Удалить'; $('#del').hidden = !id;
+    $('#go').hidden = !(id && safeUrl(a.link));
+    $('#tailor').disabled = $('#cover-ai').disabled = !id;
+    $('#tailor').title = id ? '' : 'Сначала сохраните отклик';
+    $('#sheet-title').textContent = id ? a.company + ' — отклик' : 'Новый отклик';
+    $('#scrim').hidden = false; $('#sheet').hidden = false;
+    F('company').focus();
+  }
+  function closeEditor() { $('#sheet').hidden = true; $('#rsheet').hidden = true; $('#scrim').hidden = true; editing = null; }
+
+  function formData() {
+    var d = {}; FIELDS.forEach(function (k) { d[k] = F(k).value.trim(); });
+    var rid = F('resume').value;
+    var r = resumes.find(function (x) { return String(x.id) === rid; });
+    d.resume_id = rid ? +rid : null; d.resume = r ? r.name : '';
+    d.cover = d.cover_text ? 1 : 0;
+    return d;
+  }
+
+  function saveEditor(keepOpen) {
+    var d = formData();
+    if (!d.company) { $('#form-err').textContent = 'Укажите компанию.'; F('company').focus(); return Promise.reject(); }
+    if (!d.role) { $('#form-err').textContent = 'Укажите вакансию.'; F('role').focus(); return Promise.reject(); }
+    if (d.link && !safeUrl(d.link)) { $('#form-err').textContent = 'Ссылка должна начинаться с http:// или https://'; return Promise.reject(); }
+    var p = editing ? api('PATCH', '/api/apps/' + editing.id, d) : api('POST', '/api/apps', d);
+    return p.then(function (n) {
+      var ex = byId(n.id); if (ex) Object.assign(ex, n); else apps.unshift(n);
+      renderApps();
+      if (!keepOpen) { closeEditor(); toast(editing ? 'Сохранено' : 'Отклик добавлен'); }
+      return n;
+    }).catch(function (e) { if (e) $('#form-err').textContent = e.message; throw e; });
+  }
+  $('#form').addEventListener('submit', function (e) { e.preventDefault(); saveEditor(false).catch(function () {}); });
+  $('#cancel').addEventListener('click', closeEditor);
+  $('#scrim').addEventListener('click', closeEditor);
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeEditor(); });
+  $('#del').addEventListener('click', function () {
+    if (!editing) return;
+    if (!delArmed) { delArmed = true; $('#del').textContent = 'Точно удалить? Нажмите ещё раз'; return; }
+    var a = editing;
+    api('DELETE', '/api/apps/' + a.id).then(function () {
+      apps = apps.filter(function (x) { return x.id !== a.id; }); renderApps(); closeEditor();
+      toast('Отклик удалён', function () { api('POST', '/api/apps', a).then(loadApps); });
+    });
+  });
+  $('#go').addEventListener('click', function () { saveEditor(true).then(function (n) { goApply(n); }).catch(function () {}); });
+  $('#open-resume').addEventListener('click', function () { var r = F('resume').value; if (r) window.open('/api/resumes/' + r + '/file', '_blank'); });
+  $('#cover-copy').addEventListener('click', function () { navigator.clipboard.writeText(F('cover_text').value).then(function () { toast('Письмо скопировано'); }); });
+  $('#cover-tpl').addEventListener('click', function () {
+    var t = (profile.cover_template || '').replace(/\{company\}/g, F('company').value).replace(/\{role\}/g, F('role').value)
+      .replace(/\{name\}/g, [profile.first_name, profile.last_name].filter(Boolean).join(' '));
+    F('cover_text').value = t;
+  });
+
+  function runTailor(opts, btn) {
+    if (!editing) return;
+    var st = $('#tailor-st');
+    btn.classList.add('busy');
+    st.textContent = 'Читаю вакансию и переписываю под неё — обычно 1–2 минуты…';
+    saveEditor(true).then(function (n) {
+      return api('POST', '/api/apps/' + n.id + '/tailor', opts);
+    }).then(function (n) {
+      Object.assign(editing, n);
+      return loadResumesData().then(function () {
+        fillResumeSelect(n.resume_id); F('cover_text').value = n.cover_text || '';
+        renderApps();
+        st.textContent = opts.resume ? 'Готово: «' + n.resume + '». Проверьте файл перед отправкой.' : 'Письмо готово — проверьте текст.';
+      });
+    }).catch(function (e) { st.textContent = 'Не получилось: ' + (e && e.message || 'ошибка'); })
+      .finally(function () { btn.classList.remove('busy'); });
+  }
+  $('#tailor').addEventListener('click', function () { runTailor({ resume: true, cover: true }, this); });
+  $('#cover-ai').addEventListener('click', function () { runTailor({ resume: false, cover: true }, this); });
+
+  /* =================== ВАКАНСИИ =================== */
+  var vacTimer = null, pollTimer = null, vacShown = 120;
+  function vacParams() {
+    return '?state=' + $('#vstate').value + '&q=' + encodeURIComponent($('#vq').value.trim()) +
+      '&watch=' + ($('#vwatch').checked ? 1 : 0) + '&source=' + encodeURIComponent($('#vsource').value);
+  }
+  function loadVacStats() {
+    return api('GET', '/api/vacancies/stats').then(function (s) {
+      var n = (s.states && s.states.new) || 0;
+      $('#n-vac').textContent = n || '';
+      var sel = $('#vsource'), cur = sel.value;
+      sel.innerHTML = '<option value="">Все источники</option>' + s.sources.map(function (x) { return '<option value="' + esc(x.source) + '">' + esc(x.source) + ' · ' + x.n + '</option>'; }).join('');
+      sel.value = cur;
+      var lr = s.last_run;
+      $('#run-st').textContent = s.running ? 'Бот обходит сайты…' : lr ? 'Последний обход ' + lr.finished_at.slice(8, 10) + '.' + lr.finished_at.slice(5, 7) + ' в ' + lr.finished_at.slice(11, 16) + ' · новых ' + lr.new : 'Бот ещё не запускался';
+      $('#crawl').disabled = s.running;
+      if (s.running && !pollTimer) pollTimer = setInterval(function () {
+        loadVacStats().then(function (x) { if (!x.running) { clearInterval(pollTimer); pollTimer = null; loadVac(); toast('Бот закончил обход'); } });
+      }, 5000);
+      return s;
+    });
+  }
+  function loadVac() {
+    loadVacStats();
+    return api('GET', '/api/vacancies' + vacParams()).then(renderVac);
+  }
+  function ago(iso) {
+    var d = diffDays(iso.slice(0, 10));
+    return d === 0 ? 'Сегодня' : d === -1 ? 'Вчера' : fmt(iso.slice(0, 10));
+  }
+  function renderVac(list) {
+    var box = $('#vlist');
+    if (!list.length) { box.innerHTML = '<div class="state"><strong>Пусто</strong>Новых вакансий нет. Нажмите «Обновить сейчас» или смените фильтр.</div>'; return; }
+    var html = '', last = '';
+    list.slice(0, vacShown).forEach(function (v) {
+      var g = ago(v.found_at);
+      if (g !== last) { html += '<div class="vgroup">Найдено: ' + g + '</div>'; last = g; }
+      var applied = v.state === 'applied', saved = v.state === 'saved';
+      html += '<div class="vrow' + (v.watch ? ' watch' : '') + '" data-id="' + v.id + '">' +
+        '<div><div class="vt"><a href="' + esc(safeUrl(v.url)) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a></div>' +
+        '<div class="vm"><span class="vc">' + esc(v.company) + '</span>' + (v.meta && v.source === 'hh.ru' ? '<span>' + esc(v.meta.slice(0, 140)) + '</span>' : '') +
+        '<span class="src">' + esc(v.source) + '</span><span class="score' + (v.score >= 30 ? ' hi' : '') + '" title="Насколько подходит под ваш профиль">' + v.score + '</span></div></div>' +
+        '<div class="va">' +
+        (applied ? '<span class="tag">отклик есть</span>' :
+          '<button class="btn primary" data-v="apply">' + (saved ? 'Открыть и заполнить' : 'Откликнуться') + '</button>' +
+          '<button class="mini" data-v="prep" title="Завести отклик и адаптировать резюме и письмо с ИИ">С адаптацией</button>') +
+        (v.state === 'hidden' ? '<button class="mini" data-v="unhide">Вернуть</button>' : '<button class="mini ghost" data-v="hide">Скрыть</button>') +
+        '</div></div>';
+    });
+    if (list.length > vacShown) html += '<button class="btn more" id="vmore">Показать ещё ' + Math.min(120, list.length - vacShown) + ' из ' + (list.length - vacShown) + '</button>';
+    box.innerHTML = html;
+  }
+  $('#vlist').addEventListener('click', function (e) {
+    if (e.target.id === 'vmore') { vacShown += 120; loadVac(); return; }
+    var b = e.target.closest('[data-v]'); if (!b) return;
+    var row = b.closest('.vrow'), id = +row.dataset.id, act = b.dataset.v;
+    if (act === 'hide' || act === 'unhide') {
+      api('PATCH', '/api/vacancies/' + id, { state: act === 'hide' ? 'hidden' : 'new' }).then(function () {
+        row.remove(); loadVacStats();
+        if (act === 'hide') toast('Скрыто', function () { api('PATCH', '/api/vacancies/' + id, { state: 'new' }).then(loadVac); });
+      });
+      return;
+    }
+    var win = act === 'apply' ? window.open('about:blank', '_blank') : null; // открыть вкладку сразу, пока клик «свежий»
+    api('POST', '/api/vacancies/' + id + '/apply').then(function (a) {
+      var ex = byId(a.id); if (ex) Object.assign(ex, a); else apps.unshift(a);
+      renderApps();
+      if (act === 'apply') {
+        if (win) win.location = a.link; else window.open(a.link, '_blank');
+        toast('Отклик заведён. Расширение заполнит форму — проверьте и отправьте.');
+        loadVac();
+      } else {
+        loadVac(); showTab('apps'); openEditor(a.id);
+        setTimeout(function () { $('#tailor').click(); }, 300);
+      }
+    }).catch(function (err) { if (win) win.close(); toast(err.message); });
+  });
+  ['#vstate', '#vsource', '#vwatch'].forEach(function (s) { $(s).addEventListener('change', function () { vacShown = 120; loadVac(); }); });
+  $('#vq').addEventListener('input', function () { clearTimeout(vacTimer); vacTimer = setTimeout(loadVac, 250); });
+  $('#crawl').addEventListener('click', function () {
+    api('POST', '/api/crawl', {}).then(function () { toast('Бот пошёл по сайтам — это 2–3 минуты'); loadVacStats(); });
+  });
+
+  /* =================== РЕЗЮМЕ =================== */
+  function loadResumesData() { return api('GET', '/api/resumes').then(function (d) { resumes = d; $('#n-res').textContent = d.length || ''; }); }
+  function loadResumes() { return loadResumesData().then(renderResumes); }
+  function prettyName(n) {
+    var s = String(n).replace(/^(Резюме|Resume|CV)_/i, '');
+    [profile.last_name, profile.first_name, 'PM'].forEach(function (w) { if (w) s = s.replace(new RegExp('^' + w + '_', 'i'), ''); });
+    return s.replace(/_/g, ' ').trim() || n;
+  }
+  function renderResumes() {
+    var html = '';
+    [['base', 'Основные'], ['tailored', 'Адаптированные под вакансии']].forEach(function (g) {
+      var list = resumes.filter(function (r) { return r.kind === g[0]; });
+      if (!list.length) return;
+      html += '<div class="rsec">' + g[1] + ' · ' + list.length + '</div>';
+      html += list.map(function (r) {
+        return '<button class="rcard' + (r.is_main ? ' main' : '') + '" data-r="' + r.id + '"><span class="rn">' + esc(r.kind === 'tailored' ? prettyName(r.name) : r.name) + '</span>' +
+          '<span class="rm">' + (r.is_main ? 'Основное · ' : '') + (r.used ? 'в ' + r.used + ' ' + plural(r.used, ['отклике', 'откликах', 'откликах']) + ' · ' : '') + fmt(r.created_at.slice(0, 10)) + '</span>' +
+          '<span class="rm file">' + esc(r.file) + '</span></button>';
+      }).join('');
+    });
+    $('#rlist').innerHTML = html || '<div class="state"><strong>Резюме нет</strong>Загрузите PDF или DOCX.</div>';
+  }
+  var curRes = null;
+  $('#rlist').addEventListener('click', function (e) {
+    var c = e.target.closest('[data-r]'); if (!c) return;
+    api('GET', '/api/resumes/' + c.dataset.r).then(function (r) {
+      curRes = r;
+      $('#r-title').textContent = r.name;
+      $('#r-text').value = r.text || '';
+      $('#r-file').href = '/api/resumes/' + r.id + '/file';
+      $('#r-main').hidden = !!r.is_main;
+      $('#r-hint').textContent = r.is_main ? 'Это основное резюме: оно уходит в отклики по умолчанию и служит базой для адаптации.' : '';
+      $('#r-html-wrap').hidden = $('#r-rebuild').hidden = !r.html;
+      $('#r-html').value = r.html || '';
+      $('#scrim').hidden = false; $('#rsheet').hidden = false;
+    });
+  });
+  $('#r-close').addEventListener('click', closeEditor);
+  $('#r-save').addEventListener('click', function () {
+    api('PATCH', '/api/resumes/' + curRes.id, { text: $('#r-text').value }).then(function () { toast('Сохранено'); });
+  });
+  $('#r-main').addEventListener('click', function () {
+    api('PATCH', '/api/resumes/' + curRes.id, { is_main: true }).then(function () { closeEditor(); loadResumes(); toast('Теперь это основное резюме'); });
+  });
+  $('#r-rebuild').addEventListener('click', function () {
+    var b = this; b.classList.add('busy');
+    api('POST', '/api/resumes/' + curRes.id + '/rebuild', { html: $('#r-html').value }).then(function () { toast('PDF пересобран'); })
+      .catch(function (e) { toast(e.message); }).finally(function () { b.classList.remove('busy'); });
+  });
+  $('#r-del').addEventListener('click', function () {
+    if (!confirm('Удалить «' + curRes.name + '» из списка? Файл останется в папке data/resumes.')) return;
+    api('DELETE', '/api/resumes/' + curRes.id).then(function () { closeEditor(); loadResumes(); });
+  });
+  $('#upload').addEventListener('change', function (e) {
+    var f = e.target.files[0]; if (!f) return;
+    var fd = new FormData(); fd.append('file', f);
+    fetch('/api/resumes/upload', { method: 'POST', body: fd }).then(function (r) { return r.json(); })
+      .then(function () { toast('Резюме загружено'); loadResumes(); e.target.value = ''; });
+  });
+
+  /* =================== ПРОФИЛЬ =================== */
+  var PF = [
+    ['last_name', 'Фамилия'], ['first_name', 'Имя'], ['middle_name', 'Отчество'], ['birth_date', 'Дата рождения', 'date'],
+    ['email', 'Email', 'email'], ['phone', 'Телефон', 'tel'], ['telegram', 'Telegram'], ['city', 'Город'],
+    ['citizenship', 'Гражданство'], ['relocation', 'Переезд'], ['position', 'Желаемая должность'], ['salary', 'Ожидания по зарплате'],
+    ['english', 'Английский'], ['university', 'Образование', 'wide'], ['hh_url', 'Ссылка на резюме hh.ru', 'url'],
+    ['linkedin', 'LinkedIn', 'url'], ['github', 'GitHub', 'url'], ['portfolio', 'Портфолио / сайт', 'url'],
+    ['cover_template', 'Шаблон сопроводительного письма — {company}, {role}, {name} подставятся сами', 'area']
+  ];
+  function loadProfileData() { return api('GET', '/api/profile').then(function (p) { profile = p; }); }
+  function loadProfile() {
+    Promise.all([loadProfileData(), api('GET', '/api/settings'), api('GET', '/api/sources')]).then(function (r) {
+      var s = r[1], src = r[2];
+      $('#pform').innerHTML = PF.map(function (f) {
+        var type = f[2] && f[2] !== 'wide' && f[2] !== 'area' ? f[2] : 'text';
+        var wide = f[2] === 'wide' || f[2] === 'area' ? ' wide' : '';
+        var input = f[2] === 'area' ? '<textarea id="p-' + f[0] + '" rows="9">' + esc(profile[f[0]] || '') + '</textarea>'
+          : '<input type="' + type + '" id="p-' + f[0] + '" value="' + esc(profile[f[0]] || '') + '">';
+        return '<div class="f' + wide + '"><label for="p-' + f[0] + '">' + f[1] + '</label>' + input + '</div>';
+      }).join('') + '<div class="actions"><button class="btn primary" type="submit">Сохранить профиль</button></div>';
+      $('#auto-on').checked = !!s.auto_crawl.enabled;
+      $('#auto-h').value = s.auto_crawl.hours || 6;
+      $('#src-list').innerHTML = '<span class="tag">hh.ru: ' + src.hh.queries.length + ' запросов</span>' + src.companies.map(function (c) { return '<span class="tag">' + esc(c.name) + '</span>'; }).join('');
+      $('#src-json').value = JSON.stringify(src, null, 1);
+    });
+  }
+  $('#pform').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var d = Object.assign({}, profile);
+    PF.forEach(function (f) { d[f[0]] = $('#p-' + f[0]).value; });
+    api('PUT', '/api/profile', d).then(function (p) { profile = p; toast('Профиль сохранён'); });
+  });
+  $('#save-auto').addEventListener('click', function () {
+    var src;
+    try { src = JSON.parse($('#src-json').value); } catch (x) { toast('В sources.json ошибка: ' + x.message); return; }
+    Promise.all([
+      api('PUT', '/api/settings', { auto_crawl: { enabled: $('#auto-on').checked, hours: +$('#auto-h').value || 6 } }),
+      api('PUT', '/api/sources', src)
+    ]).then(function () { toast('Настройки бота сохранены'); loadProfile(); }).catch(function (e) { toast(e.message); });
+  });
+
+  /* ---------- старт ---------- */
+  Promise.all([loadApps(), loadResumesData(), loadProfileData(), loadVacStats()]).catch(function (e) {
+    $('#lede').textContent = 'Сервер не отвечает: ' + e.message;
+  });
+  var tab = 'apps'; try { tab = localStorage.getItem('jh.tab') || 'apps'; } catch (e) {}
+  showTab(tab);
+  // данные могли поменяться из расширения
+  window.addEventListener('focus', function () { loadApps(); if (!$('#v-vac').hidden) loadVac(); });
+})();
