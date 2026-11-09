@@ -9,30 +9,32 @@ import re
 
 SCHEMA_HINT = """{
   "name": "Фамилия Имя Отчество",
-  "headline": "позиционирование одной строкой (роль · домен · сильная сторона)",
-  "contacts": ["Москва", "email", "телефон", "Telegram @nick", "ссылка"],
-  "about": "2–3 предложения: кто вы и чем полезны именно этой роли",
+  "contacts": ["Москва", "email", "телефон", "Tg: @nick"],
+  "headline": "позиционирование одной строкой",
+  "about": "абзац «О себе»",
   "experience": [
-    {"company": "Компания", "location": "город / формат", "period": "май 2025 – наст. время",
-     "role": "Должность", "context": "одна строка о компании или продукте (необязательно)",
-     "projects": [{"name": "Проект — команда N чел.", "bullets": ["результат с цифрой", "..."]}],
+    {"company": "АО «Компания», Город (формат)", "period": "май 2025 – наст. время",
+     "subtitle": "строка под компанией: чем занимается компания и ваши должности",
+     "projects": [{"name": "Проект – команда N чел.", "bullets": ["**жирный результат**: пояснение"]}],
      "bullets": ["пункты без проекта, если нужны"]}
   ],
-  "initiatives": {"title": "Продуктовые инициативы", "bullets": ["..."]},
-  "education": [{"org": "Вуз", "period": "2026 – 2028", "degree": "Степень, программа", "note": "необязательно"}],
+  "initiatives": {"title": "Продуктовые инициативы", "intro": "строка-вступление (необязательно)", "bullets": ["**жирный результат**: пояснение"]},
+  "education": [{"org": "Вуз, Город", "period": "2026 – 2028", "degree": "Степень. Программа."}],
   "skills": [{"group": "Управление", "items": "через запятую"}],
-  "extra": ["достижения, буткемпы, олимпиады — по одному на пункт"],
-  "interests": "интересы одной строкой"
+  "extra": ["**жирное начало** продолжение — по одному на пункт"],
+  "interests": "интересы одной строкой (выводится последним пунктом «Дополнительно»)"
 }"""
 
 
-def _year(period):
-    """Последний год периода; «наст. время» и «в процессе» — самые свежие."""
+def _years(period):
+    """(начало, конец) периода; «наст. время» — текущий год."""
+    from datetime import date
     p = (period or "").lower()
-    if re.search(r"наст|н\.в|present|now|в процессе|по сей", p):
-        return 9999
-    years = [int(y) for y in re.findall(r"(19\d\d|20\d\d)", p)]
-    return max(years) if years else 0
+    ys = [int(y) for y in re.findall(r"(19\d\d|20\d\d)", p)]
+    now = date.today().year
+    start = ys[0] if ys else 0
+    end = now if re.search(r"наст|н\.в|present|now|в процессе|по сей", p) else (ys[-1] if ys else 0)
+    return start, end
 
 
 def normalize(d):
@@ -41,8 +43,14 @@ def normalize(d):
         if not isinstance(d.get(k), list):
             d[k] = [] if not d.get(k) else [d[k]]
     # образование и опыт: сверху текущее, ниже — более раннее
-    d["education"] = sorted(d["education"], key=lambda e: (_year(e.get("period")), e.get("period", "")), reverse=True)
-    d["experience"] = sorted(d["experience"], key=lambda e: (_year(e.get("period")), e.get("period", "")), reverse=True)
+    d["education"] = sorted(d["education"], key=lambda e: _years(e.get("period")), reverse=True)
+    d["experience"] = sorted(d["experience"], key=lambda e: _years(e.get("period")), reverse=True)
+    for j in d["experience"]:  # старая схема: context + role → одна строка под компанией
+        if not j.get("subtitle") and (j.get("context") or j.get("role")):
+            j["subtitle"] = " ".join(x for x in [j.get("context"), j.get("role")] if x)
+        if j.get("location") and j["location"] not in (j.get("company") or ""):
+            j["company"] = f'{j.get("company")}, {j["location"]}'
+            j["location"] = ""
     if isinstance(d.get("initiatives"), list):
         d["initiatives"] = {"title": "Проекты и инициативы", "bullets": d["initiatives"]}
     if isinstance(d.get("interests"), list):
@@ -61,36 +69,27 @@ def parse_json(text):
 
 
 CSS = """
-@page { size: A4; margin: 0; }
+@font-face { font-family: "Liberation Serif"; font-weight: 400; src: url("/resume-fonts/LiberationSerif-Regular.ttf"); }
+@font-face { font-family: "Liberation Serif"; font-weight: 700; src: url("/resume-fonts/LiberationSerif-Bold.ttf"); }
+@font-face { font-family: "Liberation Serif"; font-style: italic; src: url("/resume-fonts/LiberationSerif-Italic.ttf"); }
+@page { size: Letter; margin: 0; }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
-body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1b1f1d; font-size: 9.6pt; line-height: 1.42;
-       -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-.page { width: 210mm; min-height: 297mm; padding: 13mm 15mm 12mm; background: #fff; }
-.hd { border-bottom: 1.5pt solid #1b1f1d; padding-bottom: 7pt; margin-bottom: 9pt; }
-.name { font-size: 20pt; font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
-.headline { margin-top: 3pt; font-size: 10.5pt; font-weight: 600; color: #2f45c5; }
-.contacts { margin-top: 4pt; color: #4a524e; font-size: 9pt; }
-.contacts span + span::before { content: "·"; margin: 0 6pt; color: #9aa29e; }
-.sec { margin-top: 10pt; }
-.sec > h2 { margin: 0 0 4pt; font-size: 8.6pt; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: #6a726e; }
-p { margin: 0; }
-.job + .job { margin-top: 8pt; }
-.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12pt; }
-.org { font-weight: 700; font-size: 10.2pt; }
-.loc { font-weight: 400; color: #4a524e; }
-.period { white-space: nowrap; color: #4a524e; font-size: 9pt; }
-.role { font-weight: 600; margin-top: 1pt; }
-.ctx { color: #4a524e; font-size: 9pt; margin-top: 1pt; }
-.proj { margin-top: 4pt; }
-.proj-name { font-weight: 600; }
-ul { margin: 2pt 0 0; padding-left: 12pt; }
-li { margin: 0 0 1.6pt; padding-left: 1pt; }
-li::marker { color: #8a928e; }
-.edu + .edu { margin-top: 4pt; }
-.deg { color: #2b302e; }
-.skills { display: grid; grid-template-columns: max-content 1fr; gap: 2pt 10pt; }
-.skills b { font-weight: 600; }
+body { font-family: "Liberation Serif", "Times New Roman", Times, serif; color: #000; font-size: 10pt; line-height: 1.15; }
+.page { width: 8.5in; min-height: 11in; padding: 26pt 65pt 14pt; background: #fff; }
+.name { text-align: center; font-size: 17pt; font-weight: 700; text-transform: uppercase; line-height: 1.1; }
+.contacts { text-align: center; font-size: 9pt; margin-top: 1pt; }
+.headline { text-align: center; font-size: 10.5pt; font-weight: 700; margin-top: 1pt; }
+h2 { font-size: 14pt; font-weight: 700; margin: 3pt 0 3pt; padding-bottom: 0.5pt; border-bottom: 0.75pt solid #000; line-height: 1.15; }
+p { margin: 0; text-align: justify; }
+.row { display: flex; justify-content: space-between; align-items: baseline; gap: 12pt; margin-top: 3pt; line-height: 1.15; }
+.org { font-size: 12pt; font-weight: 700; }
+.period { font-size: 9.5pt; white-space: nowrap; }
+.sub { text-align: justify; }
+.proj { font-size: 12pt; font-weight: 700; margin: 2pt 0 0 7pt; line-height: 1.15; }
+ul { margin: 1pt 0 0; padding-left: 28pt; }
+li { text-align: justify; margin: 0; }
+.intro { margin-bottom: 1pt; }
 """
 
 
@@ -98,61 +97,52 @@ def esc(s):
     return html.escape(str(s or ""))
 
 
+def rich(s):
+    """**жирное** → <b>, остальное экранируется."""
+    parts = re.split(r"(\*\*.+?\*\*)", str(s or ""))
+    return "".join(f"<b>{esc(x[2:-2])}</b>" if x.startswith("**") and x.endswith("**") else esc(x) for x in parts)
+
+
+def bullets(items):
+    return "<ul>" + "".join(f"<li>{rich(b)}</li>" for b in items if b) + "</ul>" if items else ""
+
+
 def render(d, standalone=True):
     d = normalize(d)
-    o = ['<div class="page">']
-    o.append('<header class="hd">')
-    o.append(f'<div class="name">{esc(d.get("name"))}</div>')
+    o = ['<div class="page">', f'<div class="name">{esc(d.get("name"))}</div>']
+    if d.get("contacts"):
+        o.append('<div class="contacts">' + " • ".join(esc(c) for c in d["contacts"] if c) + "</div>")
     if d.get("headline"):
         o.append(f'<div class="headline">{esc(d["headline"])}</div>')
-    if d.get("contacts"):
-        o.append('<div class="contacts">' + "".join(f"<span>{esc(c)}</span>" for c in d["contacts"] if c) + "</div>")
-    o.append("</header>")
-
     if d.get("about"):
-        o.append(f'<section class="sec"><h2>О себе</h2><p>{esc(d["about"])}</p></section>')
-
+        o.append(f'<h2>О себе</h2><p>{rich(d["about"])}</p>')
     if d["experience"]:
-        o.append('<section class="sec"><h2>Опыт работы</h2>')
+        o.append("<h2>Опыт работы</h2>")
         for j in d["experience"]:
-            loc = f' <span class="loc">· {esc(j["location"])}</span>' if j.get("location") else ""
-            o.append(f'<div class="job"><div class="row"><span class="org">{esc(j.get("company"))}{loc}</span>'
-                     f'<span class="period">{esc(j.get("period"))}</span></div>')
-            if j.get("role"):
-                o.append(f'<div class="role">{esc(j["role"])}</div>')
-            if j.get("context"):
-                o.append(f'<div class="ctx">{esc(j["context"])}</div>')
+            o.append(f'<div class="row"><span class="org">{esc(j.get("company"))}</span><span class="period">{esc(j.get("period"))}</span></div>')
+            if j.get("subtitle"):
+                o.append(f'<p class="sub">{rich(j["subtitle"])}</p>')
             for pr in j.get("projects") or []:
-                o.append(f'<div class="proj"><div class="proj-name">{esc(pr.get("name"))}</div><ul>'
-                         + "".join(f"<li>{esc(b)}</li>" for b in pr.get("bullets") or []) + "</ul></div>")
-            if j.get("bullets"):
-                o.append("<ul>" + "".join(f"<li>{esc(b)}</li>" for b in j["bullets"]) + "</ul>")
-            o.append("</div>")
-        o.append("</section>")
-
+                o.append(f'<div class="proj">{esc(pr.get("name"))}</div>' + bullets(pr.get("bullets")))
+            o.append(bullets(j.get("bullets")))
     ini = d.get("initiatives") or {}
     if ini.get("bullets"):
-        o.append(f'<section class="sec"><h2>{esc(ini.get("title") or "Проекты и инициативы")}</h2><ul>'
-                 + "".join(f"<li>{esc(b)}</li>" for b in ini["bullets"]) + "</ul></section>")
-
+        o.append(f'<h2>{esc(ini.get("title") or "Продуктовые инициативы")}</h2>')
+        if ini.get("intro"):
+            o.append(f'<p class="intro">{rich(ini["intro"])}</p>')
+        o.append(bullets(ini["bullets"]))
     if d["education"]:
-        o.append('<section class="sec"><h2>Образование</h2>')
+        o.append("<h2>Образование</h2>")
         for e in d["education"]:
-            note = f' <span class="loc">— {esc(e["note"])}</span>' if e.get("note") else ""
-            o.append(f'<div class="edu"><div class="row"><span class="org">{esc(e.get("org"))}</span>'
-                     f'<span class="period">{esc(e.get("period"))}</span></div><div class="deg">{esc(e.get("degree"))}{note}</div></div>')
-        o.append("</section>")
-
+            o.append(f'<div class="row"><span class="org">{esc(e.get("org"))}</span><span class="period">{esc(e.get("period"))}</span></div>'
+                     f'<p>{rich(e.get("degree"))}</p>')
     if d["skills"]:
-        o.append('<section class="sec"><h2>Навыки</h2><div class="skills">'
-                 + "".join(f'<b>{esc(s.get("group"))}</b><span>{esc(s.get("items"))}</span>' for s in d["skills"])
-                 + "</div></section>")
-
-    if d["extra"]:
-        o.append('<section class="sec"><h2>Дополнительно</h2><ul>' + "".join(f"<li>{esc(x)}</li>" for x in d["extra"]) + "</ul></section>")
-
+        o.append("<h2>Навыки</h2>" + bullets([f'**{s.get("group")}:** {s.get("items")}' for s in d["skills"]]))
+    extra = list(d["extra"])
     if d.get("interests"):
-        o.append(f'<section class="sec"><h2>Интересы</h2><p>{esc(d["interests"])}</p></section>')
+        extra.append(f'**Интересы:** {d["interests"]}')   # интересы — отдельным пунктом, не отдельным разделом
+    if extra:
+        o.append("<h2>Дополнительно</h2>" + bullets(extra))
     o.append("</div>")
     body = "".join(o)
     if not standalone:
@@ -163,9 +153,9 @@ def render(d, standalone=True):
 def plain_text(d):
     """Текст резюме — для писем и поиска."""
     d = normalize(d)
-    lines = [d.get("name", ""), d.get("headline", ""), " · ".join(d.get("contacts") or []), "", d.get("about", "")]
+    lines = [d.get("name", ""), " • ".join(d.get("contacts") or []), d.get("headline", ""), "", d.get("about", "")]
     for j in d["experience"]:
-        lines += ["", f'{j.get("company")} — {j.get("role")} ({j.get("period")})']
+        lines += ["", f'{j.get("company")} ({j.get("period")})', j.get("subtitle", "")]
         for pr in j.get("projects") or []:
             lines.append(pr.get("name", ""))
             lines += [f"- {b}" for b in pr.get("bullets") or []]
@@ -179,4 +169,4 @@ def plain_text(d):
     lines += d["extra"]
     if d.get("interests"):
         lines.append("Интересы: " + d["interests"])
-    return "\n".join(x for x in lines if x is not None)
+    return re.sub(r"\*\*", "", "\n".join(x for x in lines if x is not None))

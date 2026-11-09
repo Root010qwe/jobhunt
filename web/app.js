@@ -451,7 +451,7 @@
 
   function fitPaper(box) {
     var fr = box.querySelector('iframe'); if (!fr) return;
-    fr.style.transform = 'scale(' + (box.clientWidth / 794) + ')';
+    fr.style.transform = 'scale(' + (box.clientWidth / 816) + ')';
   }
   var paperRO = new ResizeObserver(function (es) { es.forEach(function (e) { fitPaper(e.target); }); });
   paperRO.observe($('#vs-paper')); paperRO.observe($('#m-paper'));
@@ -614,7 +614,7 @@
     try {
       var fr = $('#m-frame'), h = fr.contentDocument.documentElement.scrollHeight;
       fr.style.height = h + 'px';
-      $('#m-paper').style.aspectRatio = '794 / ' + Math.max(1123, h);
+      $('#m-paper').style.aspectRatio = '816 / ' + Math.max(1056, h);
     } catch (e) {}
   }
   function masterAction(btn, url, body, label) {

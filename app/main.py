@@ -710,4 +710,5 @@ async def startup():
     asyncio.create_task(scheduler())
 
 
+app.mount("/resume-fonts", StaticFiles(directory=db.ROOT / "app" / "fonts"), name="fonts")
 app.mount("/", StaticFiles(directory=WEB, html=True), name="web")

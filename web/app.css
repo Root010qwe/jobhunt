@@ -86,8 +86,8 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surfa
 @media (max-width: 40rem) { .vrow { grid-template-columns: auto 1fr; } .vrow .va { grid-column: 2; } }
 
 /* лист бумаги: A4 794×1123, масштабируется под колонку */
-.paper { position: relative; width: 100%; aspect-ratio: 794 / 1123; overflow: hidden; background: #fff; border-radius: 6px; box-shadow: 0 1px 2px rgb(0 0 0 / .08), 0 8px 24px rgb(0 0 0 / .08); }
-.paper iframe { position: absolute; top: 0; left: 0; width: 794px; height: 1123px; border: 0; transform-origin: 0 0; background: #fff; }
+.paper { position: relative; width: 100%; aspect-ratio: 816 / 1056; overflow: hidden; background: #fff; border-radius: 6px; box-shadow: 0 1px 2px rgb(0 0 0 / .08), 0 8px 24px rgb(0 0 0 / .08); }
+.paper iframe { position: absolute; top: 0; left: 0; width: 816px; height: 1056px; border: 0; transform-origin: 0 0; background: #fff; }
 .paper.tall { aspect-ratio: auto; }
 
 /* мастер-резюме */
