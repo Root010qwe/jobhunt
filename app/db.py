@@ -107,6 +107,8 @@ def init():
         if "analysis" not in vcols:  # разбор требований и ответы кандидата на уточнения
             c.execute("ALTER TABLE vacancies ADD COLUMN analysis TEXT DEFAULT ''")
             c.execute("ALTER TABLE vacancies ADD COLUMN answers TEXT DEFAULT ''")
+        if "brand" not in vcols:  # название компании для фильтра (без отделов и форм собственности)
+            c.execute("ALTER TABLE vacancies ADD COLUMN brand TEXT DEFAULT ''")
 
 
 def q(sql, args=()):

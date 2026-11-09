@@ -167,3 +167,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surfa
 .vs-banner span { flex: 1; }
 .vs-chosen { font-size: 0.875rem; color: var(--muted); }
 .vs-chosen.ok { color: var(--s-offer-fg); font-weight: 500; }
+.vrow .unit { color: var(--muted); }
+.vrow .src { font-size: 0.75rem; }
+#vcompany { width: 16rem; max-width: 100%; }
+.toolbar .search { flex: 1 1 18rem; }

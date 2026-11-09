@@ -301,14 +301,14 @@
   var vacTimer = null, pollTimer = null, vacShown = 120;
   function vacParams() {
     return '?state=' + $('#vstate').value + '&q=' + encodeURIComponent($('#vq').value.trim()) +
-      '&watch=' + ($('#vwatch').checked ? 1 : 0) + '&source=' + encodeURIComponent($('#vsource').value);
+      '&watch=' + ($('#vwatch').checked ? 1 : 0) + '&company=' + encodeURIComponent($('#vcompany').value);
   }
   function loadVacStats() {
     return api('GET', '/api/vacancies/stats').then(function (s) {
       var n = (s.states && s.states.new) || 0;
       $('#n-vac').textContent = n || '';
-      var sel = $('#vsource'), cur = sel.value;
-      sel.innerHTML = '<option value="">Все источники</option>' + s.sources.map(function (x) { return '<option value="' + esc(x.source) + '">' + esc(x.source) + ' · ' + x.n + '</option>'; }).join('');
+      var sel = $('#vcompany'), cur = sel.value;
+      sel.innerHTML = '<option value="">Все компании</option>' + (s.companies || []).map(function (x) { return '<option value="' + esc(x.brand) + '">' + esc(x.brand) + ' · ' + x.n + '</option>'; }).join('');
       sel.value = cur;
       var lr = s.last_run;
       $('#run-st').textContent = s.running ? 'Бот обходит сайты…' : lr ? 'Последний обход ' + lr.finished_at.slice(8, 10) + '.' + lr.finished_at.slice(5, 7) + ' в ' + lr.finished_at.slice(11, 16) + ' · новых ' + lr.new : 'Бот ещё не запускался';
@@ -337,14 +337,19 @@
       var g = ago(v.found_at);
       if (g !== last) { html += '<div class="vgroup">Найдено: ' + g + '</div>'; last = g; }
       var applied = v.state === 'applied', saved = v.state === 'saved';
-      var src = v.source && v.source.toLowerCase() !== String(v.company).toLowerCase() ? '<span class="src">' + esc(v.source) + '</span>' : '';
+      var brandName = v.brand || v.company;
+      // подразделение без повтора бренда: «ОТП Банк. Бизнес» → «Бизнес»
+      var rest = String(v.company || '').replace(/[«»"]/g, '');
+      if (rest.toLowerCase().indexOf(brandName.toLowerCase()) === 0) rest = rest.slice(brandName.length).replace(/^[\s.,:;–—-]+/, '');
+      var unit = rest && v.company !== brandName ? '<span class="unit">' + esc(rest) + '</span>' : '';
+      var src = v.source === 'hh.ru' ? '<span class="src">через hh.ru</span>' : (v.source && v.source !== 'трекер' ? '<span class="src">сайт компании</span>' : '');
       var meta = v.meta && v.source === 'hh.ru' ? '<span>' + esc(v.meta.split(' · ').slice(0, 3).join(' · ')) + '</span>' : '';
       var fit = v.score >= 35 ? '<span class="fit">подходит</span>' : '';
       var mine = v.watch && v.source === 'hh.ru' ? '<span class="mine">ваш список</span>' : '';
       var pick = applied ? '<span class="vpick"></span>' : '<label class="vpick" title="Выбрать для массового отклика"><input type="checkbox" data-pick="' + v.id + '"' + (picked[v.id] ? ' checked' : '') + '></label>';
       html += '<div class="vrow' + (picked[v.id] ? ' is-picked' : '') + '" data-id="' + v.id + '" tabindex="-1">' + pick +
         '<div class="vtext"><div class="vt"><a href="' + esc(safeUrl(v.url)) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a>' + fit + '</div>' +
-        '<div class="vm"><span class="vc">' + esc(v.company) + '</span>' + meta + src + mine + '</div></div>' +
+        '<div class="vm"><span class="vc" title="' + esc(v.company) + '">' + esc(brandName) + '</span>' + unit + meta + src + mine + '</div></div>' +
         '<div class="va">' +
         (applied ? '<span class="tag">отклик есть</span>' :
           '<button class="mini ghost vhide" data-v="' + (v.state === 'hidden' ? 'unhide' : 'hide') + '">' + (v.state === 'hidden' ? 'Вернуть' : 'Скрыть') + '</button>' +
@@ -439,7 +444,7 @@
       }
     }).catch(function (err) { if (win) win.close(); toast(err.message); });
   });
-  ['#vstate', '#vsource', '#vwatch'].forEach(function (s) { $(s).addEventListener('change', function () { vacShown = 120; loadVac(); }); });
+  ['#vstate', '#vcompany', '#vwatch'].forEach(function (s) { $(s).addEventListener('change', function () { vacShown = 120; loadVac(); }); });
   $('#vq').addEventListener('input', function () { clearTimeout(vacTimer); vacTimer = setTimeout(loadVac, 250); });
   $('#crawl').addEventListener('click', function () {
     api('POST', '/api/crawl', {}).then(function () { toast('Бот пошёл по сайтам — это 2–3 минуты'); loadVacStats(); });
@@ -498,7 +503,7 @@
       vs.data = d;
       var v = d.vacancy;
       $('#vs-title').textContent = v.title;
-      $('#vs-meta').innerHTML = '<b>' + esc(v.company) + '</b>' + (v.meta && v.source === 'hh.ru' ? ' · ' + esc(v.meta.split(' · ').slice(0, 4).join(' · ')) : '');
+      $('#vs-meta').innerHTML = '<b>' + esc(v.brand || v.company) + '</b>' + (v.brand && v.company !== v.brand ? ' · ' + esc(v.company) : '') + (v.meta && v.source === 'hh.ru' ? ' · ' + esc(v.meta.split(' · ').slice(0, 4).join(' · ')) : '');
       $('#vs-open').href = safeUrl(v.url) || '#';
       $('#vs-text').innerHTML = v.description ? formatDesc(trimDesc(v.description, v.title))
         : '<p class="hint">Не удалось прочитать текст вакансии' + (v.fetch_error ? ': ' + esc(v.fetch_error) : '') + '. Откройте её на сайте.</p>';

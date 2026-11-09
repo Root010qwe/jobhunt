@@ -8,6 +8,7 @@ from urllib.parse import quote, urljoin
 from playwright.async_api import async_playwright
 
 from . import db
+from .brands import brand
 
 SOURCES = Path(__file__).with_name("sources.json")
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -112,11 +113,19 @@ def save(found, log):
         if ex:
             db.run("UPDATE vacancies SET last_seen=? WHERE id=?", (ts, ex["id"]))
             continue
-        db.run("INSERT INTO vacancies(source,company,title,url,meta,score,watch,state,found_at,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",
-               (v["source"], v["company"], v["title"], url, v.get("meta", ""), v["score"], v.get("watch", 0), "new", ts, ts))
+        db.run("INSERT INTO vacancies(source,company,brand,title,url,meta,score,watch,state,found_at,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+               (v["source"], v["company"], brand(v["company"]), v["title"], url, v.get("meta", ""), v["score"], v.get("watch", 0), "new", ts, ts))
         new += 1
     mark_applied()
     return new
+
+
+def fill_brands():
+    """Проставить название компании старым записям (и пересчитать после правок в brands.py)."""
+    for v in db.q("SELECT id, company, brand FROM vacancies"):
+        b = brand(v["company"])
+        if b != v["brand"]:
+            db.run("UPDATE vacancies SET brand=? WHERE id=?", (b, v["id"]))
 
 
 def mark_applied():

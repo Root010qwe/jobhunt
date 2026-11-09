@@ -99,7 +99,7 @@ def delete_app(aid: int):
 
 # ---------- вакансии от бота ----------
 @app.get("/api/vacancies")
-def list_vacancies(state: str = "new", q: str = "", watch: int = 0, source: str = "", days: int = 0):
+def list_vacancies(state: str = "new", q: str = "", watch: int = 0, source: str = "", company: str = "", days: int = 0):
     sql = "SELECT * FROM vacancies WHERE 1=1"
     args = []
     if state != "all":
@@ -110,12 +110,15 @@ def list_vacancies(state: str = "new", q: str = "", watch: int = 0, source: str 
     if source:
         sql += " AND source=?"
         args.append(source)
+    if company:
+        sql += " AND brand=?"
+        args.append(company)
     if days:
         sql += " AND found_at>=?"
         args.append((datetime.now() - timedelta(days=days)).isoformat())
     if q:
-        sql += " AND (ulower(title) LIKE ? OR ulower(company) LIKE ? OR ulower(meta) LIKE ?)"
-        args += [f"%{q.lower()}%"] * 3
+        sql += " AND (ulower(title) LIKE ? OR ulower(company) LIKE ? OR ulower(brand) LIKE ? OR ulower(meta) LIKE ?)"
+        args += [f"%{q.lower()}%"] * 4
     sql += " ORDER BY substr(found_at,1,10) DESC, score DESC, id DESC LIMIT 600"
     return db.q(sql, args)
 
@@ -125,6 +128,7 @@ def vacancy_stats():
     return {
         "states": {r["state"]: r["n"] for r in db.q("SELECT state, count(*) n FROM vacancies GROUP BY state")},
         "sources": db.q("SELECT source, count(*) n FROM vacancies WHERE state='new' GROUP BY source ORDER BY n DESC"),
+        "companies": db.q("SELECT brand, count(*) n FROM vacancies WHERE state IN ('new','saved') AND brand!='' GROUP BY brand ORDER BY n DESC, brand"),
         "today": db.one("SELECT count(*) n FROM vacancies WHERE found_at>=?", (today(),))["n"],
         "last_run": db.one("SELECT * FROM runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1"),
         "running": crawl_state["running"],
@@ -767,6 +771,7 @@ async def scheduler():
 @app.on_event("startup")
 async def startup():
     seed.seed()
+    crawler.fill_brands()
     crawler.mark_applied()
     asyncio.create_task(scheduler())
 
