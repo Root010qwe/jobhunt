@@ -487,25 +487,52 @@
   function openVacancy(id) {
     vs = { id: id, data: null, draft: null, tab: vs.tab || 'resume' };
     $('#vs-title').textContent = 'Загружаю…'; $('#vs-meta').textContent = ''; $('#vs-text').innerHTML = '';
-    $('#vs-empty').hidden = true; $('#vs-draft').hidden = true; $('#vs-st').textContent = '';
+    showStep(null);
     $('#scrim').hidden = false; $('#vsheet').hidden = false;
     busy(true, 'Читаю вакансию…');
-    api('GET', '/api/vacancies/' + id + '/detail').then(function (d) {
+    reloadVacancy().catch(function (e) { busy(false); $('#vs-title').textContent = 'Ошибка'; $('#vs-text').textContent = e.message; });
+  }
+  function reloadVacancy(keepDraftId) {
+    return api('GET', '/api/vacancies/' + vs.id + '/detail').then(function (d) {
       busy(false);
       vs.data = d;
       var v = d.vacancy;
       $('#vs-title').textContent = v.title;
-      $('#vs-meta').innerHTML = '<b>' + esc(v.company) + '</b>' + (v.meta && v.source === 'hh.ru' ? ' · ' + esc(v.meta.split(' · ').slice(0, 4).join(' · ')) : '') +
-        (d.app ? ' · отклик: ' + esc(STMAP[d.app.status] ? STMAP[d.app.status].t : d.app.status) : '');
+      $('#vs-meta').innerHTML = '<b>' + esc(v.company) + '</b>' + (v.meta && v.source === 'hh.ru' ? ' · ' + esc(v.meta.split(' · ').slice(0, 4).join(' · ')) : '');
       $('#vs-open').href = safeUrl(v.url) || '#';
       $('#vs-text').innerHTML = v.description ? formatDesc(trimDesc(v.description, v.title))
         : '<p class="hint">Не удалось прочитать текст вакансии' + (v.fetch_error ? ': ' + esc(v.fetch_error) : '') + '. Откройте её на сайте.</p>';
-      if (d.drafts.length) showDraft(d.drafts.find(function (x) { return x.approved; }) || d.drafts[0]);
-      else { $('#vs-empty').hidden = false; $('#vs-make').disabled = !v.description; }
-    }).catch(function (e) { busy(false); $('#vs-title').textContent = 'Ошибка'; $('#vs-text').textContent = e.message; });
+      renderBanner();
+      if (d.drafts.length) {
+        var keep = keepDraftId && d.drafts.find(function (x) { return x.id === keepDraftId; });
+        showDraft(keep || d.drafts.find(function (x) { return x.approved; }) || d.drafts[0]);
+      } else if (v.analysis && v.analysis.length) { renderQA(); showStep('qa'); }
+      else { showStep('empty'); $('#vs-analyze').disabled = !v.description; }
+    });
+  }
+  function showStep(s) {
+    $('#vs-empty').hidden = s !== 'empty'; $('#vs-qa').hidden = s !== 'qa'; $('#vs-draft').hidden = s !== 'draft';
   }
   function closeVacancy() { $('#vsheet').hidden = true; $('#scrim').hidden = true; vs.id = null; if (!$('#v-vac').hidden) loadVac(); }
   $('#vs-close').addEventListener('click', closeVacancy);
+
+  // отклик уже отмечен «Подано» (в том числе по ошибке) — показываем и даём вернуть
+  function renderBanner() {
+    var app = vs.data && vs.data.app;
+    var sent = app && app.status !== 'ready';
+    $('#vs-banner').hidden = !sent;
+    if (sent) {
+      $('#vs-banner-t').textContent = 'Отклик отмечен как «' + (STMAP[app.status] ? STMAP[app.status].t : app.status) + '»' +
+        (app.applied_date ? ' ' + fmt(app.applied_date) : '') + '. Если вы его ещё не отправляли — верните, и можно будет откликнуться с новой версией.';
+    }
+  }
+  $('#vs-reopen').addEventListener('click', function () {
+    api('POST', '/api/apps/' + vs.data.app.id + '/reopen').then(function (a) {
+      vs.data.app = a; var ex = byId(a.id); if (ex) Object.assign(ex, a);
+      renderApps(); renderBanner(); if (vs.draft) showDraft(vs.draft);
+      toast('Отклик снова «Готово к подаче»');
+    });
+  });
 
   var busyTimer = null;
   function busy(on, text) {
@@ -517,6 +544,58 @@
     tick(); busyTimer = setInterval(tick, 1000);
   }
 
+  /* --- шаг 1: требования и уточнения --- */
+  var LV = { strong: 'есть', partial: 'частично', gap: 'нет в резюме' };
+  $('#vs-analyze').addEventListener('click', function () {
+    busy(true, 'Разбираю требования вакансии…');
+    api('POST', '/api/vacancies/' + vs.id + '/analyze').then(function (r) {
+      busy(false);
+      vs.data.vacancy.analysis = r.requirements; vs.data.vacancy.answers = r.answers || {};
+      renderQA(); showStep('qa');
+    }).catch(function (e) { busy(false); toast('Не получилось: ' + e.message); });
+  });
+  function renderQA() {
+    var v = vs.data.vacancy, ans = v.answers || {};
+    var reqs = v.analysis || [];
+    var ask = reqs.filter(function (r) { return r.level !== 'strong'; });
+    var ok = reqs.filter(function (r) { return r.level === 'strong'; });
+    var html = ask.map(function (r, i) {
+      var k = r.req, a = ans[k] || {};
+      var lv = LV[r.level] ? r.level : 'partial';
+      return '<li data-k="' + esc(k) + '"><div class="qh"><span class="lv ' + lv + '">' + LV[lv] + '</span><span class="rq">' + esc(r.req) + '</span></div>' +
+        (r.evidence ? '<div class="ev">В резюме: ' + esc(r.evidence) + '</div>' : '') +
+        '<div class="q">' + esc(r.question || 'Есть ли у вас такой опыт?') + '</div>' +
+        '<div class="yn"><button type="button" class="yes" aria-pressed="' + (a.has === true) + '">Да, есть</button><button type="button" class="no" aria-pressed="' + (a.has === false) + '">Нет</button></div>' +
+        '<textarea class="field-in" rows="2" placeholder="Коротко: что знаете или делали, где и с каким результатом"' + (a.has ? '' : ' hidden') + '>' + esc(a.text || '') + '</textarea></li>';
+    }).join('');
+    if (ok.length) html += '<li><details><summary>Уже есть в резюме: ' + ok.length + '</summary><div class="ev">' +
+      ok.map(function (r) { return '• ' + esc(r.req) + (r.evidence ? ' — ' + esc(r.evidence) : ''); }).join('<br>') + '</div></details></li>';
+    $('#vs-qa-list').innerHTML = html || '<li>Все требования закрыты резюме — уточнять нечего.</li>';
+    $('#vs-qa-back').hidden = !vs.data.drafts.length;
+  }
+  $('#vs-qa-list').addEventListener('click', function (e) {
+    var b = e.target.closest('.yn button'); if (!b) return;
+    var li = b.closest('li');
+    li.querySelectorAll('.yn button').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+    var ta = li.querySelector('textarea'); ta.hidden = !b.classList.contains('yes');
+    if (!ta.hidden) ta.focus();
+  });
+  function collectAnswers() {
+    var out = {};
+    document.querySelectorAll('#vs-qa-list li[data-k]').forEach(function (li) {
+      var yes = li.querySelector('.yes').getAttribute('aria-pressed') === 'true';
+      var no = li.querySelector('.no').getAttribute('aria-pressed') === 'true';
+      if (yes || no) out[li.dataset.k] = { req: li.dataset.k, has: yes, text: yes ? li.querySelector('textarea').value.trim() : '' };
+    });
+    return out;
+  }
+  $('#vs-qa-back').addEventListener('click', function () { if (vs.draft) showDraft(vs.draft); });
+  $('#vs-to-qa').addEventListener('click', function () {
+    if (vs.data.vacancy.analysis && vs.data.vacancy.analysis.length) { renderQA(); showStep('qa'); }
+    else $('#vs-analyze').click();
+  });
+
+  /* --- шаг 2: версии резюме и письма --- */
   function counter(el, out) { out.textContent = el.value.length + ' зн.'; }
   ['letter', 'short'].forEach(function (k) {
     var el = $('#vs-' + k), out = $(k === 'letter' ? '#vs-lc' : '#vs-sc');
@@ -525,10 +604,10 @@
 
   function showDraft(dr) {
     vs.draft = dr;
-    $('#vs-empty').hidden = true; $('#vs-draft').hidden = false;
+    showStep('draft');
     var drafts = vs.data.drafts;
     $('#vs-ver').innerHTML = drafts.map(function (x) {
-      return '<option value="' + x.id + '"' + (x.id === dr.id ? ' selected' : '') + '>Версия ' + x.version + (x.approved ? ' · выбрана' : '') +
+      return '<option value="' + x.id + '"' + (x.id === dr.id ? ' selected' : '') + '>Версия ' + x.version + (x.approved ? ' ✓ выбрана' : '') +
         (x.request ? ' · «' + esc(x.request.slice(0, 40)) + (x.request.length > 40 ? '…' : '') + '»' : '') + '</option>';
     }).join('');
     $('#vs-changes').textContent = dr.changes ? 'Что подстроено: ' + dr.changes : '';
@@ -536,15 +615,25 @@
     $('#vs-frame').onload = function () { fitPaper($('#vs-paper')); };
     $('#vs-letter').value = dr.letter || ''; $('#vs-short').value = dr.letter_short || '';
     counter($('#vs-letter'), $('#vs-lc')); counter($('#vs-short'), $('#vs-sc'));
-    var LV = { strong: 'есть', partial: 'частично', gap: 'нет' };
     $('#vs-match').innerHTML = (dr.match || []).map(function (m) {
       var lv = LV[m.level] ? m.level : 'partial';
       return '<li><span class="lv ' + lv + '">' + LV[lv] + '</span><span class="rq">' + esc(m.req) + '</span><span class="ev">' + esc(m.evidence) + '</span></li>';
     }).join('') || '<li>Разбор требований не получен.</li>';
-    var app = vs.data.app;
-    $('#vs-apply').textContent = app && app.status !== 'ready' ? 'Открыть сайт вакансии' : 'Откликнуться с этой версией';
-    $('#vs-st').textContent = dr.approved ? 'Эта версия выбрана для отклика.' : '';
+    renderChosen();
     setTab(vs.tab);
+  }
+  // что сейчас уйдёт в отклик
+  function renderChosen() {
+    var chosen = vs.data.drafts.find(function (x) { return x.approved; });
+    var app = vs.data.app, sent = app && app.status !== 'ready';
+    var st = $('#vs-st');
+    st.className = 'vs-chosen' + (chosen ? ' ok' : '');
+    if (sent) st.textContent = 'Отклик уже отправлен — новая версия в него не попадёт.';
+    else if (chosen && chosen.id === vs.draft.id) st.textContent = '✓ Для отклика выбрана эта версия: её PDF и письмо подставит расширение.';
+    else if (chosen) st.textContent = 'Для отклика выбрана версия ' + chosen.version + '. Эта пока не выбрана.';
+    else st.textContent = 'Версия для отклика ещё не выбрана.';
+    $('#vs-keep').hidden = sent || (chosen && chosen.id === vs.draft.id);
+    $('#vs-apply').disabled = !!sent;
   }
   function setTab(tab) {
     vs.tab = tab;
@@ -561,12 +650,13 @@
     busy(true, label);
     return api('POST', '/api/vacancies/' + vs.id + '/draft', body).then(function (dr) {
       busy(false);
+      if (body.answers) vs.data.vacancy.answers = body.answers;
       vs.data.drafts.unshift(dr); vs.tab = 'resume'; showDraft(dr);
       $('#vs-req').value = '';
-    }).catch(function (e) { busy(false); toast('Не получилось: ' + e.message); if (!vs.data.drafts.length) $('#vs-empty').hidden = false; });
+    }).catch(function (e) { busy(false); toast('Не получилось: ' + e.message); });
   }
   $('#vs-make').addEventListener('click', function () {
-    makeDraft({ request: $('#vs-wish').value.trim() }, 'Пишу резюме и письмо под вакансию — обычно до минуты…');
+    makeDraft({ request: $('#vs-wish').value.trim(), answers: collectAnswers() }, 'Пишу резюме и письмо под вакансию — обычно до минуты…');
   });
   $('#vs-redo').addEventListener('click', function () {
     var req = $('#vs-req').value.trim();
@@ -579,24 +669,23 @@
       Object.assign(vs.draft, dr); toast('Текст письма сохранён');
     });
   });
+
+  /* --- шаг 3: выбрать версию и откликнуться --- */
   function approve(open) {
     var win = open ? window.open('about:blank', '_blank') : null;
-    $('#vs-st').textContent = 'Собираю PDF…';
-    var save = api('PATCH', '/api/drafts/' + vs.draft.id, { letter: $('#vs-letter').value, letter_short: $('#vs-short').value });
-    save.then(function () { return api('POST', '/api/drafts/' + vs.draft.id + '/approve'); }).then(function (a) {
-      vs.data.drafts.forEach(function (x) { x.approved = x.id === vs.draft.id; });
-      vs.data.app = a; showDraft(vs.draft);
-      var ex = byId(a.id); if (ex) Object.assign(ex, a); else apps.unshift(a);
-      renderApps(); loadResumesData();
-      if (win) { win.location = a.link; toast('Открыл вакансию. Расширение заполнит форму этим резюме и письмом.'); }
-      else toast('Версия сохранена: отклик «Готово к подаче»');
-    }).catch(function (e) { if (win) win.close(); $('#vs-st').textContent = ''; toast(e.message); });
+    var st = $('#vs-st'); st.className = 'vs-chosen'; st.textContent = 'Собираю PDF…';
+    var id = vs.draft.id;
+    api('PATCH', '/api/drafts/' + id, { letter: $('#vs-letter').value, letter_short: $('#vs-short').value })
+      .then(function () { return api('POST', '/api/drafts/' + id + '/approve'); })
+      .then(function (a) {
+        var ex = byId(a.id); if (ex) Object.assign(ex, a); else apps.unshift(a);
+        renderApps(); loadResumesData();
+        if (win) { win.location = a.link; toast('Открыл вакансию. Расширение заполнит форму выбранным резюме и письмом.'); }
+        else toast('Версия ' + vs.draft.version + ' выбрана для отклика');
+        return reloadVacancy(id);
+      }).catch(function (e) { if (win) win.close(); renderChosen(); toast(e.message); });
   }
-  $('#vs-apply').addEventListener('click', function () {
-    var app = vs.data.app;
-    if (app && app.status !== 'ready') { window.open(app.link, '_blank'); return; }
-    approve(true);
-  });
+  $('#vs-apply').addEventListener('click', function () { approve(true); });
   $('#vs-keep').addEventListener('click', function () { approve(false); });
 
   /* ---------- мастер-резюме ---------- */

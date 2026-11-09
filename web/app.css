@@ -134,10 +134,36 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surfa
 .vs-edit { display: grid; gap: 0.3rem; }
 .vs-edit-row { display: flex; gap: 0.5rem; }
 .vs-edit-row input { flex: 1; }
-.vs-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; position: sticky; bottom: -2rem; padding: 0.75rem 0 1rem; background: linear-gradient(to bottom, transparent, var(--bg) 30%); }
+.vs-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; position: sticky; bottom: -2rem; margin: 0 -1.5rem; padding: 0.75rem 1.5rem 2.75rem; background: var(--bg); border-top: 1px solid var(--line); z-index: 2; }
 .vs-actions .sp { flex: 1; }
 .vs-busy { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 0.75rem; background: color-mix(in srgb, var(--bg) 88%, transparent); color: var(--muted); font-weight: 500; }
 .spin { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 60rem) { .vs-body { grid-template-columns: 1fr; overflow-y: auto; } .vs-desc { border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; } .vs-work { overflow: visible; } }
 .vrow .vtext { cursor: pointer; }
+
+/* шаги карточки вакансии */
+.steps-h { display: flex; align-items: center; gap: 0.6rem; font-size: 0.8125rem; color: var(--muted); }
+.steps-h b { display: inline-grid; place-items: center; width: 1.3rem; height: 1.3rem; border-radius: 50%; background: var(--accent); color: var(--accent-ink); font-size: 0.75rem; }
+.steps-h .sp { flex: 1; }
+.vs-qa { display: grid; gap: 0.7rem; }
+.qa { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.qa li { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.7rem 0.8rem; display: grid; gap: 0.35rem; }
+.qa .qh { display: flex; gap: 0.6rem; align-items: baseline; }
+.qa .rq { font-weight: 500; }
+.qa .ev { color: var(--muted); font-size: 0.85rem; }
+.qa .q { font-size: 0.9rem; }
+.qa .yn { display: flex; gap: 0.4rem; }
+.qa .yn button { border: 1px solid var(--line); background: var(--surface); border-radius: 6px; padding: 0.25rem 0.7rem; font-size: 0.85rem; font-weight: 500; }
+.qa .yn button[aria-pressed="true"].yes { background: var(--s-offer-bg); color: var(--s-offer-fg); border-color: transparent; }
+.qa .yn button[aria-pressed="true"].no { background: var(--surface-2); color: var(--muted); }
+.qa textarea { width: 100%; }
+.qa .lv { font-size: 0.72rem; font-weight: 600; border-radius: 99px; padding: 0.1rem 0.5rem; white-space: nowrap; }
+.qa .lv.strong { background: var(--s-offer-bg); color: var(--s-offer-fg); }
+.qa .lv.partial { background: var(--warn-bg); color: var(--warn-fg); }
+.qa .lv.gap { background: var(--crit-bg); color: var(--crit-fg); }
+.qa details summary { cursor: pointer; color: var(--muted); font-size: 0.875rem; }
+.vs-banner { display: flex; gap: 0.75rem; align-items: center; background: var(--warn-bg); color: var(--warn-fg); border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.8rem; font-size: 0.9rem; }
+.vs-banner span { flex: 1; }
+.vs-chosen { font-size: 0.875rem; color: var(--muted); }
+.vs-chosen.ok { color: var(--s-offer-fg); font-weight: 500; }

@@ -103,6 +103,10 @@ def init():
             c.execute("ALTER TABLE applications ADD COLUMN queue_pos INTEGER DEFAULT 0")
         if "cover_short" not in cols:  # короткая версия письма для полей с лимитом
             c.execute("ALTER TABLE applications ADD COLUMN cover_short TEXT DEFAULT ''")
+        vcols = {r[1] for r in c.execute("PRAGMA table_info(vacancies)")}
+        if "analysis" not in vcols:  # разбор требований и ответы кандидата на уточнения
+            c.execute("ALTER TABLE vacancies ADD COLUMN analysis TEXT DEFAULT ''")
+            c.execute("ALTER TABLE vacancies ADD COLUMN answers TEXT DEFAULT ''")
 
 
 def q(sql, args=()):

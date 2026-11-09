@@ -391,6 +391,8 @@ async def vacancy_detail(vid: int, refresh: int = 0):
     v = await ensure_description(vid, bool(refresh))
     drafts = [draft_row(d) for d in db.q("SELECT * FROM drafts WHERE vacancy_id=? ORDER BY version DESC", (vid,))]
     app_ = db.one("SELECT * FROM applications WHERE vacancy_id=? OR link=?", (vid, v["url"]))
+    v["analysis"] = json.loads(v.get("analysis") or "[]")
+    v["answers"] = json.loads(v.get("answers") or "{}")
     return {"vacancy": v, "drafts": drafts, "app": app_row(app_) if app_ else None}
 
 
@@ -418,15 +420,73 @@ def master():
     return m
 
 
-async def make_draft(vid, request="", from_id=None):
+def known_facts():
+    return db.kv_get("facts", []) or []
+
+
+def remember_facts(new):
+    facts = known_facts()
+    for f in new:
+        if f and f not in facts:
+            facts.append(f)
+    db.kv_set("facts", facts[-60:])
+
+
+@app.post("/api/vacancies/{vid}/analyze")
+async def analyze_vacancy(vid: int):
+    """Шаг 1: требования вакансии и вопросы кандидату по пробелам."""
+    v = await ensure_description(vid)
+    if not v["description"]:
+        raise HTTPException(502, "Не удалось прочитать текст вакансии")
+    try:
+        out = await asyncio.to_thread(ai.analyze, master(), v["description"], v["company"], v["title"], known_facts())
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(502, str(e))
+    reqs = out.get("requirements") or []
+    db.run("UPDATE vacancies SET analysis=? WHERE id=?", (json.dumps(reqs, ensure_ascii=False), vid))
+    return {"requirements": reqs, "answers": json.loads(v.get("answers") or "{}")}
+
+
+@app.get("/api/facts")
+def get_facts():
+    return {"facts": known_facts()}
+
+
+@app.put("/api/facts")
+async def put_facts(req: Request):
+    d = await req.json()
+    db.kv_set("facts", [f.strip() for f in d.get("facts", []) if f.strip()])
+    return {"facts": known_facts()}
+
+
+@app.post("/api/apps/{aid}/reopen")
+def reopen_app(aid: int):
+    """Отклик отмечен «Подано» по ошибке — вернуть в «Готово к подаче»."""
+    a = get_app(aid)
+    a["history"].append({"s": "ready", "at": today()})
+    db.run("UPDATE applications SET status='ready', applied_date='', history=?, updated_at=? WHERE id=?",
+           (json.dumps(a["history"], ensure_ascii=False), db.now(), aid))
+    if a.get("vacancy_id"):
+        db.run("UPDATE vacancies SET state='saved' WHERE id=?", (a["vacancy_id"],))
+    return get_app(aid)
+
+
+async def make_draft(vid, request="", from_id=None, answers=None):
     v = await ensure_description(vid)
     if not v["description"]:
         raise HTTPException(502, "Не удалось прочитать текст вакансии: " + v.get("fetch_error", "пустая страница"))
     prev = db.one("SELECT * FROM drafts WHERE id=?", (from_id,)) if from_id else None
     prof = db.kv_get("profile", {})
+    # ответы на уточнения: новые сохраняем и запоминаем как факты о кандидате
+    if answers is not None:
+        db.run("UPDATE vacancies SET answers=? WHERE id=?", (json.dumps(answers, ensure_ascii=False), vid))
+    else:
+        answers = json.loads(v.get("answers") or "{}")
+    facts = [f"{a['req']}: {a['text']}" for a in (answers.values() if isinstance(answers, dict) else answers) if a.get("has") and a.get("text")]
+    remember_facts(facts)
     try:
         out = await asyncio.to_thread(ai.tailor, master(), v["description"], v["company"], v["title"], prof,
-                                      request or None, json.loads(prev["resume"]) if prev else None)
+                                      request or None, json.loads(prev["resume"]) if prev else None, facts + [f for f in known_facts() if f not in facts])
     except (RuntimeError, ValueError) as e:
         raise HTTPException(502, str(e))
     res = rm.normalize(out.get("resume") or {})
@@ -443,7 +503,7 @@ async def make_draft(vid, request="", from_id=None):
 async def new_draft(vid: int, req: Request):
     """Новая версия резюме и письма под вакансию; с from_id и request — правка предыдущей версии."""
     d = await req.json() if (await req.body()) else {}
-    return await make_draft(vid, (d.get("request") or "").strip(), d.get("from_id"))
+    return await make_draft(vid, (d.get("request") or "").strip(), d.get("from_id"), d.get("answers"))
 
 
 @app.get("/api/drafts/{did}/html", response_class=HTMLResponse)
@@ -468,6 +528,9 @@ async def approve_draft_core(did):
     if not dr:
         raise HTTPException(404)
     v = db.one("SELECT * FROM vacancies WHERE id=?", (dr["vacancy_id"],))
+    sent = db.one("SELECT id FROM applications WHERE (vacancy_id=? OR link=?) AND status!='ready'", (v["id"], v["url"]))
+    if sent:  # сначала проверка, потом PDF и отметка — чтобы версия не числилась выбранной без отклика
+        raise HTTPException(409, "Отклик на эту вакансию отмечен как отправленный. Если это ошибка — нажмите «Ещё не отправлял».")
     prof = db.kv_get("profile", {})
     data = json.loads(dr["resume"])
     fname = "_".join(x for x in ["Резюме", resumes.safe_name(prof.get("last_name", "")), resumes.safe_name(prof.get("first_name", "")),
@@ -481,8 +544,6 @@ async def approve_draft_core(did):
            (did, did, rid, v["id"]))
     a = db.one("SELECT * FROM applications WHERE vacancy_id=? OR link=?", (v["id"], v["url"]))
     track = "Стажировка" if re.search(r"стаж|intern|trainee", v["title"], re.I) else "Работа"
-    if a and a["status"] != "ready":
-        return get_app(a["id"])   # отклик уже подан: что ушло работодателю, не переписываем
     if a:
         db.run("""UPDATE applications SET resume=?, resume_id=?, cover=1, cover_text=?, cover_short=?, vacancy_id=?,
                   prep_date=COALESCE(NULLIF(prep_date,''),?), updated_at=? WHERE id=?""",

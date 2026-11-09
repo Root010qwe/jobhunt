@@ -228,14 +228,29 @@
       <div class="vs-text" id="vs-text"></div>
     </section>
     <section class="vs-work" id="vs-work">
+      <div class="vs-banner" id="vs-banner" hidden>
+        <span id="vs-banner-t"></span>
+        <button type="button" class="mini" id="vs-reopen">Ещё не отправлял</button>
+      </div>
       <div class="vs-empty" id="vs-empty">
-        <div class="h2">Отклик на эту вакансию</div>
-        <p class="hint">Соберу резюме под требования вакансии из вашего мастер-резюме, напишу письмо (полное и короткое для полей с лимитом) и покажу, какие требования закрываете.</p>
-        <label class="lbl" for="vs-wish">Пожелания, если есть</label>
+        <div class="steps-h"><b>1</b> Требования и уточнения <span class="sp"></span><span>2 Резюме и письмо</span><span>3 Отклик</span></div>
+        <p class="hint">Разберу, что просит вакансия и что из этого есть в вашем резюме. По пробелам спрошу: если вы это знаете, но в резюме не написано — добавлю в резюме и письмо.</p>
+        <button type="button" class="btn primary" id="vs-analyze">Разобрать требования</button>
+      </div>
+      <div class="vs-qa" id="vs-qa" hidden>
+        <div class="steps-h"><b>1</b> Требования и уточнения <span class="sp"></span><span>2 Резюме и письмо</span><span>3 Отклик</span></div>
+        <p class="hint">Отметьте, что из недостающего у вас есть. Пара слов о том, что именно знаете или делали, — попадёт в резюме и письмо. Ответы запоминаются для следующих вакансий.</p>
+        <ul class="qa" id="vs-qa-list"></ul>
+        <label class="lbl" for="vs-wish">Пожелания к резюме, если есть</label>
         <textarea id="vs-wish" class="field-in" rows="2" placeholder="Например: делай упор на аналитику и метрики"></textarea>
-        <button type="button" class="btn primary" id="vs-make">Подготовить резюме и письмо</button>
+        <div class="vs-actions">
+          <button type="button" class="mini ghost" id="vs-qa-back" hidden>Назад к версиям</button>
+          <span class="sp"></span>
+          <button type="button" class="btn primary" id="vs-make">Собрать резюме и письмо</button>
+        </div>
       </div>
       <div class="vs-draft" id="vs-draft" hidden>
+        <div class="steps-h"><span>1 Требования</span><span class="sp"></span><b>2</b> Резюме и письмо <span>3 Отклик</span></div>
         <div class="vs-bar">
           <select class="field-in" id="vs-ver" aria-label="Версия"></select>
           <div class="seg" role="tablist" id="vs-tabs">
@@ -244,7 +259,7 @@
             <button type="button" data-t="match" aria-selected="false">Требования</button>
           </div>
         </div>
-        <p class="vs-changes" id="vs-changes"></p>
+        <p class="vs-changes"><span id="vs-changes"></span> <button type="button" class="lnk ghost" id="vs-to-qa">Изменить ответы на уточнения</button></p>
         <div class="vs-pane" data-p="resume"><div class="paper" id="vs-paper"><iframe title="Резюме под вакансию" id="vs-frame"></iframe></div></div>
         <div class="vs-pane" data-p="letter" hidden>
           <label class="lbl" for="vs-letter">Письмо <span class="cnt" id="vs-lc"></span></label>
@@ -262,13 +277,13 @@
           </div>
         </div>
         <div class="vs-actions">
-          <span class="hint" id="vs-st"></span>
+          <span class="vs-chosen" id="vs-st"></span>
           <span class="sp"></span>
-          <button type="button" class="btn" id="vs-keep">Сохранить без отклика</button>
-          <button type="button" class="btn primary" id="vs-apply">Откликнуться с этой версией</button>
+          <button type="button" class="btn" id="vs-keep" title="Сохранить PDF и письмо этой версии — их подставит расширение в форму отклика">Выбрать эту версию</button>
+          <button type="button" class="btn primary" id="vs-apply" title="Выбрать эту версию и открыть сайт вакансии — расширение заполнит форму">Откликнуться →</button>
         </div>
       </div>
-      <div class="vs-busy" id="vs-busy" hidden><div class="spin"></div><div id="vs-busy-t">Читаю вакансию и пишу резюме…</div></div>
+      <div class="vs-busy" id="vs-busy" hidden><div class="spin"></div><div id="vs-busy-t">Работаю…</div></div>
     </section>
   </div>
 </aside>

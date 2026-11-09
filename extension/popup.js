@@ -1,3 +1,4 @@
+document.getElementById('ver').textContent = 'v' + chrome.runtime.getManifest().version;
 const $ = (s) => document.querySelector(s);
 const msg = (m) => new Promise((r) => chrome.runtime.sendMessage(m, (x) => r(x || {})));
 

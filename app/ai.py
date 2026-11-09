@@ -95,7 +95,7 @@ TAILOR_OUT = """Верни только JSON:
 match — 4–8 главных требований. gap честно, если опыта нет."""
 
 
-def tailor(master, vacancy_text, company, role, profile, request=None, previous=None):
+def tailor(master, vacancy_text, company, role, profile, request=None, previous=None, facts=None):
     sign = ", ".join(x for x in [" ".join(x for x in [profile.get("first_name"), profile.get("last_name")] if x),
                                    profile.get("phone"), profile.get("telegram")] if x)
     base = previous or master
@@ -104,6 +104,9 @@ def tailor(master, vacancy_text, company, role, profile, request=None, previous=
         extra = f"\nЭто правка предыдущей версии. Просьба кандидата: {request}\nОстальное в предыдущей версии сохрани.\n"
     elif request:
         extra = f"\nПожелание кандидата: {request}\n"
+    if facts:
+        extra += ("\nКандидат дополнительно сообщил о себе (это правда — используй в резюме и письме, где закрывает требования; "
+                  "формулируй уверенно, без «изучаю» и «немного знаю», но не преувеличивай):\n" + "\n".join(f"- {f}" for f in facts) + "\n")
     return ask_json(f"""Ты карьерный консультант, который адаптирует резюме под конкретную вакансию так, чтобы рекрутер
 за 10 секунд увидел совпадение с требованиями.
 
@@ -120,6 +123,32 @@ def tailor(master, vacancy_text, company, role, profile, request=None, previous=
 {'' if not previous else chr(10) + 'Мастер-резюме, источник фактов (JSON):' + chr(10) + json.dumps(master, ensure_ascii=False)}
 
 {TAILOR_OUT}""")
+
+
+def analyze(master, vacancy_text, company, role, facts):
+    """Требования вакансии и что по ним есть в резюме; по пробелам — вопрос кандидату."""
+    known = "\n".join(f"- {f}" for f in facts) or "—"
+    return ask_json(f"""Разбери вакансию для кандидата перед тем, как адаптировать его резюме.
+
+1. Выпиши 5–9 главных требований и задач вакансии (обязательные и желательные), коротко, своими словами.
+2. Для каждого найди подтверждение в резюме или в известных фактах о кандидате.
+3. level: strong — прямо подтверждено; partial — есть близкий опыт; gap — в резюме нет.
+4. Для partial и gap задай кандидату один короткий вопрос, чтобы понять, есть ли у него этот опыт или знания,
+   которых нет в резюме (например: «Работали с сетями или Wi-Fi-оборудованием? Что именно знаете?»). Для strong — пустая строка.
+
+Верни только JSON:
+{{"requirements": [{{"req": "...", "level": "strong|partial|gap", "evidence": "что есть в резюме, коротко", "question": "..."}}]}}
+
+Вакансия: {role} — {company}
+<<<
+{vacancy_text}
+>>>
+
+Известные факты о кандидате (не из резюме, но правда):
+{known}
+
+Резюме (JSON):
+{json.dumps(master, ensure_ascii=False)}""", mdl="sonnet")
 
 
 def cover_letter(base_text, vacancy_text, company, role, profile):
