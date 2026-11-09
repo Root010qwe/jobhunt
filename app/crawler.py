@@ -91,6 +91,14 @@ def score(title, meta, kw):
     return s
 
 
+META_TAIL = re.compile(r"\s+(Полная|Частичная|Проектная|Стажировка|Удал[её]нн|Гибрид|Офис|Москва|Санкт-Петербург|Без опыта|От \d|Нет опыта)\b.*$")
+
+
+def clean_title(title):
+    t = META_TAIL.sub("", title).strip()
+    return t if len(t) >= 6 else title
+
+
 def norm_url(url):
     return url.split("#")[0].rstrip("/")
 
@@ -142,6 +150,7 @@ async def crawl_company(ctx, comp, kw, sem, log):
             finally:
                 await page.close()
         for it in items:
+            it["title"] = clean_title(it["title"])
             s = score(it["title"], it["meta"], kw)
             if s >= 0:
                 res.append({**it, "source": comp["name"], "company": comp["name"], "score": s + 5, "watch": 1})
@@ -152,9 +161,11 @@ async def crawl_company(ctx, comp, kw, sem, log):
 async def crawl_hh(ctx, cfg, kw, watch, sem, log):
     res = []
 
-    async def one(qtext, exp, area, pg):
-        url = (f"https://hh.ru/search/vacancy?text={quote(qtext)}&area={area}&experience={exp}"
-               f"&order_by=publication_time&search_period=30&items_on_page=50&page={pg}")
+    async def one(qtext, exp, area, pg, employer=False):
+        # employer=True: все вакансии работодателя (поиск по названию компании), роль отберёт фильтр
+        field = "&search_field=company_name" if employer else ""
+        url = (f"https://hh.ru/search/vacancy?text={quote(qtext)}{field}&area={area}&experience={exp}"
+               f"&order_by=publication_time&search_period=30&items_on_page=100&page={pg}")
         async with sem:
             page = await ctx.new_page()
             try:
@@ -171,7 +182,7 @@ async def crawl_hh(ctx, cfg, kw, watch, sem, log):
             s = score(it["title"], it["meta"], kw)
             if s < 0:
                 continue
-            w = int(any(x.lower() in it["company"].lower() for x in watch))
+            w = int(employer or any(x.lower() in it["company"].lower() for x in watch))
             parts = []
             for x in [exp_label] + re.split(r"\s*·\s*|\n", it["meta"]):
                 x = re.sub(r"^Опыт\s+", "", x.strip())
@@ -182,6 +193,8 @@ async def crawl_hh(ctx, cfg, kw, watch, sem, log):
 
     jobs = [one(qt, exp, area, pg) for qt in cfg["queries"] for exp in cfg["experience"]
             for area in cfg["area"] for pg in range(cfg.get("pages", 1))]
+    jobs += [one(name, exp, area, 0, employer=True) for name in cfg.get("employers", [])
+             for exp in cfg["experience"] for area in cfg["area"]]
     await asyncio.gather(*jobs)
     uniq = {}
     for r in res:
@@ -201,7 +214,7 @@ async def crawl(only=None):
         browser = await p.chromium.launch()
         ctx = await browser.new_context(locale="ru-RU", user_agent=UA, ignore_https_errors=True,
                                         viewport={"width": 1366, "height": 900})
-        sem = asyncio.Semaphore(4)
+        sem = asyncio.Semaphore(6)
         tasks = [crawl_company(ctx, c, kw, sem, log) for c in src["companies"] if not only or c["name"] in only]
         if src["hh"]["enabled"] and (not only or "hh.ru" in only):
             tasks.append(crawl_hh(ctx, src["hh"], kw, src.get("watchlist_hh", []), sem, log))

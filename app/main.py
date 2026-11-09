@@ -78,6 +78,8 @@ async def patch_app(aid: int, req: Request):
         vals["history"] = json.dumps(a["history"], ensure_ascii=False)
         if vals["status"] not in ("ready", "skipped") and not a["applied_date"] and "applied_date" not in d:
             vals["applied_date"] = today()
+        if vals["status"] != "ready":
+            vals["queue_pos"] = 0
         if a.get("vacancy_id") and vals["status"] != "ready":
             db.run("UPDATE vacancies SET state='applied' WHERE id=?", (a["vacancy_id"],))
     if not vals:
@@ -154,6 +156,103 @@ async def apply_vacancy(vid: int, req: Request):
                   json.dumps([{"s": "ready", "at": today()}]), vid, db.now(), db.now()))
     db.run("UPDATE vacancies SET state='saved' WHERE id=?", (vid,))
     return get_app(aid)
+
+
+def _new_app_from_vacancy(v, prof, main):
+    ex = db.one("SELECT id FROM applications WHERE vacancy_id=? OR link=?", (v["id"], v["url"]))
+    if ex:
+        return ex["id"]
+    track = "Стажировка" if re.search(r"стаж|intern|trainee", v["title"], re.I) else "Работа"
+    aid = db.run("""INSERT INTO applications(company,role,track,status,link,resume,resume_id,cover,cover_text,prep_date,history,vacancy_id,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 (v["company"], v["title"], track, "ready", v["url"], main["name"] if main else "", main["id"] if main else None,
+                  1, ai.template_letter(prof, v["company"], v["title"]), today(),
+                  json.dumps([{"s": "ready", "at": today()}]), v["id"], db.now(), db.now()))
+    db.run("UPDATE vacancies SET state='saved' WHERE id=?", (v["id"],))
+    return aid
+
+
+bulk_state = {"running": False, "done": 0, "total": 0, "error": None}
+
+
+async def tailor_many(ids):
+    """Адаптирует резюме и письмо под каждую вакансию очереди — по одной, в фоне."""
+    bulk_state.update(running=True, done=0, total=len(ids), error=None)
+    for aid in ids:
+        try:
+            a = get_app(aid)
+            base = resumes.main_resume()
+            if base and a["status"] == "ready":
+                vt = await vacancy_text(a)
+                prof = db.kv_get("profile", {})
+                letter = await asyncio.to_thread(ai.cover_letter, base["text"], vt, a["company"], a["role"], prof)
+                db.run("UPDATE applications SET cover=1, cover_text=? WHERE id=?", (letter, aid))
+        except Exception as e:  # noqa: BLE001
+            bulk_state["error"] = str(e)[:200]
+        bulk_state["done"] += 1
+    bulk_state["running"] = False
+
+
+@app.post("/api/vacancies/bulk-apply")
+async def bulk_apply(req: Request):
+    """Массовый отклик: заводит отклики по выбранным вакансиям и ставит их в очередь."""
+    d = await req.json()
+    ids = [int(x) for x in d.get("ids", [])][:200]
+    if not ids:
+        raise HTTPException(400, "Не выбрано ни одной вакансии")
+    prof = db.kv_get("profile", {})
+    main = resumes.main_resume()
+    last = db.one("SELECT COALESCE(MAX(queue_pos),0) m FROM applications")["m"]
+    created = []
+    for vid in ids:
+        v = db.one("SELECT * FROM vacancies WHERE id=?", (vid,))
+        if not v or v["state"] == "applied":
+            continue
+        aid = _new_app_from_vacancy(v, prof, main)
+        a = get_app(aid)
+        if a["status"] != "ready":
+            continue
+        last += 1
+        db.run("UPDATE applications SET queue_pos=? WHERE id=?", (last, aid))
+        created.append(aid)
+    if d.get("tailor") and created and not bulk_state["running"]:
+        asyncio.create_task(tailor_many(created))
+    return {"queued": len(created), "first": queue_next(0)}
+
+
+def queue_list():
+    return db.q("SELECT id, company, role, link, queue_pos FROM applications WHERE queue_pos>0 AND status='ready' AND link!='' ORDER BY queue_pos")
+
+
+def queue_next(after_id):
+    rows = queue_list()
+    if after_id:
+        cur = db.one("SELECT queue_pos FROM applications WHERE id=?", (after_id,))
+        pos = cur["queue_pos"] if cur else 0
+        rows = [r for r in rows if r["queue_pos"] > pos and r["id"] != after_id]
+    return rows[0] if rows else None
+
+
+@app.get("/api/queue")
+def get_queue():
+    return {"items": queue_list(), "tailoring": bulk_state}
+
+
+@app.get("/api/queue/next")
+def get_queue_next(after: int = 0):
+    return {"next": queue_next(after), "left": len(queue_list())}
+
+
+@app.post("/api/queue/{aid}/skip")
+def queue_skip(aid: int):
+    db.run("UPDATE applications SET queue_pos=0 WHERE id=?", (aid,))
+    return {"next": queue_next(aid), "left": len(queue_list())}
+
+
+@app.delete("/api/queue")
+def queue_clear():
+    db.run("UPDATE applications SET queue_pos=0 WHERE queue_pos>0")
+    return {"ok": True}
 
 
 async def run_crawl(only=None):
@@ -385,7 +484,15 @@ def autofill(url: str = "", app_id: int = 0):
     if not letter:
         letter = ai.template_letter(prof, "вашей компании", "эту позицию").replace("«эту позицию»", "эту позицию")
     full = " ".join(x for x in [prof.get("last_name"), prof.get("first_name"), prof.get("middle_name")] if x)
+    queue = None
+    if a and a.get("queue_pos"):
+        items = queue_list()
+        ids = [r["id"] for r in items]
+        nxt = queue_next(a["id"])
+        queue = {"pos": ids.index(a["id"]) + 1 if a["id"] in ids else 0, "total": len(items),
+                 "next_url": nxt["link"] if nxt else "", "next_id": nxt["id"] if nxt else 0}
     return {
+        "queue": queue,
         "app": {k: a[k] for k in ("id", "company", "role", "status")} if a else None,
         "profile": {**prof, "full_name": full},
         "cover_letter": letter,
@@ -402,7 +509,7 @@ async def autofill_submitted(req: Request):
         if a["status"] == "ready":
             hist = json.loads(a["history"]) if isinstance(a["history"], str) else a["history"]
             hist.append({"s": "applied", "at": today()})
-            db.run("UPDATE applications SET status='applied', applied_date=?, history=?, updated_at=? WHERE id=?",
+            db.run("UPDATE applications SET status='applied', queue_pos=0, applied_date=?, history=?, updated_at=? WHERE id=?",
                    (today(), json.dumps(hist), db.now(), a["id"]))
             if a.get("vacancy_id"):
                 db.run("UPDATE vacancies SET state='applied' WHERE id=?", (a["vacancy_id"],))

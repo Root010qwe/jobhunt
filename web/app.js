@@ -330,14 +330,16 @@
     });
   }
   function loadVac() {
-    loadVacStats();
+    loadVacStats(); refreshQueue();
     return api('GET', '/api/vacancies' + vacParams()).then(renderVac);
   }
   function ago(iso) {
     var d = diffDays(iso.slice(0, 10));
     return d === 0 ? 'Сегодня' : d === -1 ? 'Вчера' : fmt(iso.slice(0, 10));
   }
+  var picked = {}, lastVac = [];
   function renderVac(list) {
+    lastVac = list;
     var box = $('#vlist');
     if (!list.length) { box.innerHTML = '<div class="state"><strong>Пусто</strong>Новых вакансий нет. Нажмите «Обновить сейчас» или смените фильтр.</div>'; return; }
     var html = '', last = '';
@@ -349,7 +351,8 @@
       var meta = v.meta && v.source === 'hh.ru' ? '<span>' + esc(v.meta.split(' · ').slice(0, 3).join(' · ')) + '</span>' : '';
       var fit = v.score >= 35 ? '<span class="fit">подходит</span>' : '';
       var mine = v.watch && v.source === 'hh.ru' ? '<span class="mine">ваш список</span>' : '';
-      html += '<div class="vrow" data-id="' + v.id + '" tabindex="-1">' +
+      var pick = applied ? '<span class="vpick"></span>' : '<label class="vpick" title="Выбрать для массового отклика"><input type="checkbox" data-pick="' + v.id + '"' + (picked[v.id] ? ' checked' : '') + '></label>';
+      html += '<div class="vrow' + (picked[v.id] ? ' is-picked' : '') + '" data-id="' + v.id + '" tabindex="-1">' + pick +
         '<div class="vtext"><div class="vt"><a href="' + esc(safeUrl(v.url)) + '" target="_blank" rel="noopener">' + esc(v.title) + '</a>' + fit + '</div>' +
         '<div class="vm"><span class="vc">' + esc(v.company) + '</span>' + meta + src + mine + '</div></div>' +
         '<div class="va">' +
@@ -361,7 +364,61 @@
     });
     if (list.length > vacShown) html += '<button class="btn more" id="vmore">Показать ещё ' + Math.min(120, list.length - vacShown) + ' из ' + (list.length - vacShown) + '</button>';
     box.innerHTML = html;
+    renderBulk();
   }
+
+  /* ---------- массовый отклик ---------- */
+  function pickedIds() { return Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number); }
+  function renderBulk() {
+    var n = pickedIds().length;
+    $('#bulk').hidden = n === 0;
+    $('#bulk-n').textContent = n + ' ' + plural(n, ['вакансия', 'вакансии', 'вакансий']);
+  }
+  function refreshQueue() {
+    return api('GET', '/api/queue').then(function (q) {
+      var n = q.items.length, t = q.tailoring;
+      $('#queue-go').hidden = n === 0;
+      $('#queue-go').textContent = 'Продолжить очередь · ' + n;
+      $('#queue-clear').hidden = n === 0;
+      $('#queue-st').textContent = t.running ? 'ИИ пишет письма: ' + t.done + ' из ' + t.total : '';
+      if (t.running) setTimeout(refreshQueue, 5000);
+      return q;
+    });
+  }
+  $('#vlist').addEventListener('change', function (e) {
+    var c = e.target.closest('[data-pick]'); if (!c) return;
+    picked[c.dataset.pick] = c.checked;
+    c.closest('.vrow').classList.toggle('is-picked', c.checked);
+    renderBulk();
+  });
+  $('#pick-fit').addEventListener('click', function () {
+    lastVac.forEach(function (v) { if (v.state !== 'applied' && v.score >= 30) picked[v.id] = true; });
+    renderVac(lastVac);
+  });
+  $('#pick-none').addEventListener('click', function () { picked = {}; renderVac(lastVac); });
+  function openQueue(first) {
+    if (!first) { toast('Очередь пуста'); return; }
+    window.open(first.link, '_blank');
+    toast('Открыл первую вакансию. В плашке расширения жмите «Отправить и дальше».');
+  }
+  $('#bulk-go').addEventListener('click', function () {
+    var ids = pickedIds(); if (!ids.length) return;
+    var tailor = $('#bulk-ai').checked;
+    var win = tailor ? null : window.open('about:blank', '_blank');
+    api('POST', '/api/vacancies/bulk-apply', { ids: ids, tailor: tailor }).then(function (r) {
+      picked = {}; loadApps(); loadVac(); refreshQueue();
+      if (!r.queued) { if (win) win.close(); toast('Эти вакансии уже в работе'); return; }
+      if (tailor) { toast('В очереди ' + r.queued + '. ИИ пишет письма — откройте очередь, когда закончит.'); return; }
+      if (win && r.first) { win.location = r.first.link; toast('В очереди ' + r.queued + '. Жмите «Отправить и дальше» в плашке расширения.'); }
+    }).catch(function (e) { if (win) win.close(); toast(e.message); });
+  });
+  $('#queue-go').addEventListener('click', function () {
+    api('GET', '/api/queue/next').then(function (r) { openQueue(r.next); });
+  });
+  $('#queue-clear').addEventListener('click', function () {
+    api('DELETE', '/api/queue').then(function () { refreshQueue(); toast('Очередь очищена, отклики остались в трекере'); });
+  });
+
   $('#vlist').addEventListener('click', function (e) {
     if (e.target.id === 'vmore') { vacShown += 120; loadVac(); return; }
     var b = e.target.closest('[data-v]'); if (!b) return;

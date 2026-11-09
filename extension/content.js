@@ -35,6 +35,8 @@
   let filledOnce = false;
   let reported = false;
   let badge = null;
+  let filledTotal = 0;
+  let advancing = false;
 
   // Подпись поля: сначала собственные атрибуты и <label>, затем текст контейнера,
   // но только если в контейнере одно поле (иначе подхватим подпись соседа).
@@ -137,7 +139,7 @@
       setValue(el, v);
       n++;
     }
-    if (n) { filledOnce = true; showBadge(n); }
+    if (n) { filledOnce = true; filledTotal += n; showBadge(filledTotal); }
     return n;
   }
 
@@ -152,23 +154,32 @@
     if (window.top !== window && !n) return;
     if (!badge) {
       badge = document.createElement('div');
-      badge.setAttribute('style', 'position:fixed;z-index:2147483647;right:16px;bottom:16px;background:#17201B;color:#fff;font:500 13px/1.35 -apple-system,system-ui,sans-serif;padding:10px 12px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);display:flex;gap:10px;align-items:center;max-width:360px');
+      badge.setAttribute('style', 'position:fixed;z-index:2147483647;right:16px;bottom:16px;background:#17201B;color:#fff;font:500 13px/1.35 -apple-system,system-ui,sans-serif;padding:10px 12px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;max-width:380px');
       document.documentElement.appendChild(badge);
     }
     const app = data && data.app;
+    const q = data && data.queue;
     const head = app ? `${app.company} — ${app.role}` : 'JobHunt';
     badge.innerHTML = '';
     const txt = document.createElement('span');
-    txt.textContent = n ? `${head}: заполнено полей — ${n}. Проверьте и отправьте.` : `${head}: заполнить форму?`;
+    txt.style.flex = '1 1 100%';
+    if (q && window.top === window) {
+      txt.textContent = `Очередь ${q.pos} из ${q.total} · ${head}` + (n ? `. Заполнено полей: ${n} — проверьте.` : '.');
+    } else {
+      txt.textContent = n ? `${head}: заполнено полей — ${n}. Проверьте и отправьте.` : `${head}: заполнить форму?`;
+    }
     badge.appendChild(txt);
-    const btn = (label, fn) => {
+    const btn = (label, fn, quiet) => {
       const b = document.createElement('button');
       b.textContent = label;
-      b.setAttribute('style', 'all:unset;cursor:pointer;background:#2F45C5;color:#fff;padding:5px 9px;border-radius:6px;white-space:nowrap');
+      b.setAttribute('style', 'all:unset;cursor:pointer;padding:5px 9px;border-radius:6px;white-space:nowrap;' + (quiet ? 'color:#cfd6d1;box-shadow:inset 0 0 0 1px #4a5650' : 'background:#2F45C5;color:#fff'));
       b.addEventListener('click', fn);
       badge.appendChild(b);
     };
-    if (!n) btn('Заполнить', () => fill(false));
+    if (q && window.top === window) {
+      btn('Отправить и дальше', sendAndNext);
+      btn('Пропустить', skipToNext, true);
+    } else if (!n) btn('Заполнить', () => fill(false));
     else btn('Подал', () => report(true));
     const x = document.createElement('button');
     x.textContent = '×';
@@ -177,15 +188,78 @@
     badge.appendChild(x);
   }
 
+  function say(text) { if (badge && badge.firstChild) badge.firstChild.textContent = text; }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isVisible = (el) => el && el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== 'hidden';
+  const SUBMIT = /^(отправить|откликнуться|подать|submit|apply|send)/i;
+
+  function findSubmit() {
+    const all = [...document.querySelectorAll('button, input[type="submit"], [role="button"]')]
+      .filter((b) => isVisible(b) && !(badge && badge.contains(b)) && SUBMIT.test((b.innerText || b.value || '').trim()));
+    const filled = document.querySelector('[data-jobhunt]');
+    const form = filled && filled.closest('form');
+    return (form && all.find((b) => form.contains(b))) || all.find((b) => b.type === 'submit') || all[all.length - 1];
+  }
+
+  async function hhApply() {
+    // hh.ru: кнопка «Откликнуться» → (предупреждение о переезде) → модалка с письмом → «Откликнуться»
+    const open = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
+    if (open) { open.click(); await sleep(2200); }
+    const reloc = document.querySelector('[data-qa="relocation-warning-confirm"]');
+    if (reloc) { reloc.click(); await sleep(1500); }
+    const addLetter = document.querySelector('[data-qa="vacancy-response-letter-toggle"]');
+    if (addLetter) { addLetter.click(); await sleep(600); }
+    await fill(false);
+    const ok = document.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]');
+    if (ok) { ok.click(); await sleep(2200); }
+    return !!(open || ok);
+  }
+
+  async function goNext(nextUrl) {
+    if (nextUrl) { say('Открываю следующую вакансию…'); await sleep(900); location.href = nextUrl; }
+    else {
+      say('Очередь закончилась. Отклики отмечены в трекере.');
+      if (badge) [...badge.querySelectorAll('button')].slice(0, -1).forEach((b) => b.remove());
+    }
+  }
+
+  async function sendAndNext() {
+    if (advancing) return;
+    advancing = true;
+    say('Отправляю…');
+    let sent = false;
+    if (/(^|\.)hh\.ru$/.test(location.hostname)) sent = await hhApply();
+    else {
+      const b = findSubmit();
+      if (b) { b.click(); sent = true; await sleep(2500); }
+    }
+    if (!sent) { say('Не нашёл кнопку отправки — отправьте сами, потом «Отправить и дальше» ещё раз.'); advancing = false; return; }
+    await report(false, true);
+    await goNext(data.queue && data.queue.next_url);
+  }
+
+  async function skipToNext() {
+    if (advancing) return;
+    advancing = true;
+    const r = await send({ type: 'queue-skip', app_id: data.app.id });
+    await goNext(r.ok && r.data.next ? r.data.next.link : '');
+  }
+
   function pageTitle() {
     const h = document.querySelector('h1');
     return (h && h.innerText.trim().slice(0, 150)) || document.title.slice(0, 150);
   }
 
-  async function report(manual) {
+  async function report(manual, inQueue) {
     if (reported) return;
     reported = true;
     const r = await send({ type: 'submitted', payload: { url: location.href, app_id: data && data.app && data.app.id, title: pageTitle(), company: '' } });
+    if (inQueue) return;
+    if (data && data.queue && window.top === window && !advancing) {  // отправили сами в режиме очереди — едем дальше
+      advancing = true;
+      say('Отмечено «Подано».');
+      return goNext(data.queue.next_url);
+    }
     if (badge) {
       badge.firstChild.textContent = r.ok ? 'Отмечено в JobHunt как «Подано».' : 'JobHunt недоступен — отметьте отклик вручную.';
       [...badge.querySelectorAll('button')].slice(0, -1).forEach((b) => b.remove());
@@ -233,6 +307,7 @@
     const ready = data.app && data.app.status === 'ready';
     if (ready) {
       await fill(false);
+      if (data.queue && !badge && window.top === window) showBadge(filledTotal);
     } else if (!badge && JOBPAGE.test(location.href + ' ' + document.title) && looksLikeForm()) {
       showBadge(0);
     }

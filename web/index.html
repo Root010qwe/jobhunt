@@ -90,7 +90,20 @@
     </div>
     <label class="check tgl"><input type="checkbox" id="vwatch"> Только мои компании</label>
   </div>
+  <div class="queue-bar">
+    <button type="button" class="mini" id="pick-fit">Выбрать все подходящие</button>
+    <span class="sp"></span>
+    <span class="run-st" id="queue-st"></span>
+    <button type="button" class="mini ghost" id="queue-clear" hidden>Очистить очередь</button>
+    <button type="button" class="btn" id="queue-go" hidden>Продолжить очередь</button>
+  </div>
   <div class="vlist" id="vlist"></div>
+  <div class="bulk" id="bulk" hidden>
+    <span class="bulk-n" id="bulk-n"></span>
+    <label class="check"><input type="checkbox" id="bulk-ai"> Письмо под каждую с ИИ</label>
+    <button type="button" class="mini ghost" id="pick-none">Сбросить</button>
+    <button type="button" class="btn primary" id="bulk-go">Массовый отклик</button>
+  </div>
 </main>
 
 <!-- ===== Резюме ===== -->

@@ -82,6 +82,9 @@ def conn():
 def init():
     with _lock, conn() as c:
         c.executescript(SCHEMA)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(applications)")}
+        if "queue_pos" not in cols:  # очередь массового отклика: 0 = не в очереди
+            c.execute("ALTER TABLE applications ADD COLUMN queue_pos INTEGER DEFAULT 0")
 
 
 def q(sql, args=()):

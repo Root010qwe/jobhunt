@@ -150,7 +150,79 @@
    "стажер менеджер продукта",
    "владелец продукта"
   ],
-  "pages": 2
+  "pages": 2,
+  "employers": [
+   "Ростех",
+   "Ростелеком",
+   "РТК ИТ",
+   "РТК ЦТ",
+   "Солар",
+   "Билайн",
+   "ВымпелКом",
+   "OCS Distribution",
+   "Т1",
+   "3Logic",
+   "Isource",
+   "YADRO",
+   "VK",
+   "Лаборатория Касперского",
+   "МТС",
+   "MTS Digital",
+   "MONT",
+   "RRC",
+   "ЛАНИТ",
+   "Гринатом",
+   "Росатом",
+   "Точка",
+   "ТК Центр",
+   "Газинформсервис",
+   "Т-Банк",
+   "Софтлайн",
+   "Контур",
+   "КРОК",
+   "X5 Tech",
+   "Газпром автоматизация",
+   "Газпром информ",
+   "ЛУКОЙЛ-Технологии",
+   "НВБС",
+   "Wildberries",
+   "RWB",
+   "Иви",
+   "Авито",
+   "СберТех",
+   "Сбер",
+   "РЕД СОФТ",
+   "РТИТС",
+   "Совкомбанк",
+   "Selectel",
+   "ГНИВЦ",
+   "БФТ",
+   "РТ Лабс",
+   "Sitronics",
+   "СИБУР",
+   "РСХБ-Интех",
+   "Сиссофт",
+   "Россети",
+   "ТЭК Информ",
+   "Диасофт",
+   "Терралинк",
+   "Консист",
+   "ОТР",
+   "BIA Technologies",
+   "1С",
+   "Яндекс",
+   "Ozon",
+   "Альфа-Банк",
+   "ОТП Банк",
+   "МегаФон",
+   "2ГИС",
+   "Lamoda",
+   "Самокат",
+   "ВТБ",
+   "Газпромбанк",
+   "Купер"
+  ],
+  "_comment": "queries — поиск по роли; employers — все вакансии этих работодателей на hh.ru (роль отбирает фильтр keywords)"
  },
  "companies": [
   {
@@ -289,6 +361,36 @@
    "name": "Higgsfield",
    "url": "https://jobs.ashbyhq.com/higgsfieldai",
    "pattern": "jobs\\.ashbyhq\\.com/higgsfieldai/[0-9a-f-]{36}$"
+  },
+  {
+   "name": "КРОК",
+   "url": "https://careers.croc.ru/vacancies/",
+   "pattern": "careers\\.croc\\.ru/vacancies/[^/?#]+/?$"
+  },
+  {
+   "name": "ГНИВЦ",
+   "url": "https://career.gnivc.ru/vacancies/",
+   "pattern": "/vacancies/\\d+/?$"
+  },
+  {
+   "name": "Солар",
+   "url": "https://team.rt-solar.ru/vacancies/",
+   "pattern": "/vacancies/\\d+/?$"
+  },
+  {
+   "name": "Selectel",
+   "url": "https://selectel.ru/careers/all/",
+   "pattern": "/careers/all/vacancy/\\d+"
+  },
+  {
+   "name": "Сбер",
+   "url": "https://rabota.sber.ru/search/?query=менеджер продукта",
+   "extra": [
+    "https://rabota.sber.ru/search/?query=менеджер проектов",
+    "https://rabota.sber.ru/search/?query=продуктовый аналитик",
+    "https://rabota.sber.ru/search/?query=стажер"
+   ],
+   "pattern": "rabota\\.sber\\.ru/vacancy/[^/?#]+/?$"
   }
  ],
  "watchlist_hh": [

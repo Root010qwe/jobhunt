@@ -15,7 +15,7 @@
 /* лента вакансий: строки одного веса, действие проявляется на строке под курсором */
 .vlist { display: grid; gap: 0.5rem; }
 .vgroup { font-family: var(--font-display); font-weight: 500; font-size: 0.8125rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin: 0.9rem 0 0.1rem; }
-.vrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem 1rem; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.8rem 0.8rem 1rem; transition: border-color .15s ease, box-shadow .15s ease; }
+.vrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 0.5rem 1rem; align-items: center; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0.8rem 0.8rem 0.8rem 1rem; transition: border-color .15s ease, box-shadow .15s ease; }
 .vrow:hover, .vrow:focus-within { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); box-shadow: 0 1px 3px rgb(0 0 0 / .05); }
 .vtext { min-width: 0; }
 .vrow .vt { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; font-family: var(--font-display); font-weight: 500; font-size: 1rem; line-height: 1.3; }
@@ -71,3 +71,16 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surfa
 .main-tag { color: var(--accent); font-weight: 500; }
 .rcard { min-width: 0; }
 .lede .run-st { font-size: inherit; }
+
+/* массовый отклик */
+.vpick { display: grid; place-items: center; width: 1.25rem; align-self: center; }
+.vpick input { width: 1rem; height: 1rem; accent-color: var(--accent); cursor: pointer; }
+.vrow.is-picked { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 4%, var(--surface)); }
+.queue-bar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.queue-bar .sp { flex: 1; }
+.bulk { position: sticky; bottom: 1rem; z-index: 5; justify-self: center; display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; background: var(--ink); color: var(--bg); padding: 0.6rem 0.6rem 0.6rem 1.1rem; border-radius: 12px; box-shadow: 0 8px 28px rgb(0 0 0 / .22); }
+.bulk .bulk-n { font-weight: 600; }
+.bulk .check { font-size: 0.875rem; }
+.bulk .check input { accent-color: var(--accent); }
+.bulk .mini.ghost { color: color-mix(in srgb, var(--bg) 70%, transparent); }
+@media (max-width: 40rem) { .vrow { grid-template-columns: auto 1fr; } .vrow .va { grid-column: 2; } }

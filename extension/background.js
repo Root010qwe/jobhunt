@@ -31,6 +31,8 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       } else if (msg.type === 'submitted') {
         const d = await call('/api/autofill/submitted', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(msg.payload) });
         reply({ ok: true, data: d });
+      } else if (msg.type === 'queue-skip') {
+        reply({ ok: true, data: await call('/api/queue/' + msg.app_id + '/skip', { method: 'POST' }) });
       } else if (msg.type === 'ping') {
         reply({ ok: true, data: await call('/api/settings') });
       }
