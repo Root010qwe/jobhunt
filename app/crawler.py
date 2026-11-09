@@ -230,22 +230,48 @@ async def crawl(only=None):
     return {"found": len(found), "new": new, "log": sorted(log)}
 
 
-async def fetch_text(url, limit=12000):
-    """Текст страницы вакансии — для адаптации резюме и письма."""
+DESC_JS = r"""
+() => {
+  // основной блок описания: самый «текстовый» из кандидатов, без меню, подвала и форм
+  const sel = '[data-qa="vacancy-description"], [class*="vacancy-description" i], [class*="description" i], article, main, [class*="vacancy" i], [class*="content" i]';
+  let best = null, bestLen = 0;
+  for (const el of document.querySelectorAll(sel)) {
+    if (el.closest('header, footer, nav, form')) continue;
+    const t = (el.innerText || '').trim();
+    const len = t.length;
+    if (len > 300 && len < 40000 && (len > bestLen * 1.0) && (!best || !el.contains(best) || len < bestLen * 1.6)) { best = el; bestLen = len; }
+  }
+  const hh = document.querySelector('[data-qa="vacancy-description"]');
+  if (hh) { best = hh; }
+  const el = best || document.body;
+  // страница одноразовая: прячем служебное прямо в ней, чтобы innerText сохранил переносы строк
+  el.querySelectorAll('script, style, nav, footer, header, form, button, svg, iframe, [class*="breadcrumb" i]').forEach(n => { n.style.display = 'none'; });
+  const h1 = document.querySelector('h1');
+  const text = (el.innerText || '').split('\n').map(s => s.replace(/\s+/g, ' ').trim()).filter((s, i, a) => s || (a[i - 1] && a[i - 1].trim()))
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return { title: h1 ? h1.innerText.trim() : document.title, text };
+}
+"""
+
+
+async def fetch_vacancy(url, limit=15000):
+    """Заголовок и текст вакансии — для карточки в дашборде и для адаптации резюме."""
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         ctx = await browser.new_context(locale="ru-RU", user_agent=UA, ignore_https_errors=True)
         page = await ctx.new_page()
         try:
-            await page.goto(url, timeout=40000, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
-            sel = '[data-qa="vacancy-description"]' if "hh.ru" in url else "main"
-            el = await page.query_selector(sel)
-            text = await (el.inner_text() if el else page.inner_text("body"))
+            await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+            await page.wait_for_timeout(3500)
+            d = await page.evaluate(DESC_JS)
         finally:
             await browser.close()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text[:limit]
+    d["text"] = d["text"][:limit]
+    return d
+
+
+async def fetch_text(url, limit=12000):
+    return (await fetch_vacancy(url, limit))["text"]
 
 
 if __name__ == "__main__":

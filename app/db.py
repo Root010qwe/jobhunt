@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS resumes (
   created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  vacancy_id INTEGER,
+  version INTEGER DEFAULT 1,
+  request TEXT DEFAULT '',
+  resume TEXT DEFAULT '{}',
+  letter TEXT DEFAULT '',
+  letter_short TEXT DEFAULT '',
+  match TEXT DEFAULT '[]',
+  changes TEXT DEFAULT '',
+  model TEXT DEFAULT '',
+  approved INTEGER DEFAULT 0,
+  resume_id INTEGER,
+  created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at TEXT, finished_at TEXT, found INTEGER DEFAULT 0, new INTEGER DEFAULT 0, log TEXT DEFAULT ''
@@ -76,6 +91,7 @@ def now():
 def conn():
     c = sqlite3.connect(DB_PATH, check_same_thread=False)
     c.row_factory = sqlite3.Row
+    c.create_function("ulower", 1, lambda s: s.lower() if isinstance(s, str) else s)  # lower() SQLite не знает кириллицу
     return c
 
 
@@ -85,6 +101,8 @@ def init():
         cols = {r[1] for r in c.execute("PRAGMA table_info(applications)")}
         if "queue_pos" not in cols:  # очередь массового отклика: 0 = не в очереди
             c.execute("ALTER TABLE applications ADD COLUMN queue_pos INTEGER DEFAULT 0")
+        if "cover_short" not in cols:  # короткая версия письма для полей с лимитом
+            c.execute("ALTER TABLE applications ADD COLUMN cover_short TEXT DEFAULT ''")
 
 
 def q(sql, args=()):

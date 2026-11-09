@@ -12,7 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, crawler, db, resumes, seed
+from fastapi.responses import HTMLResponse
+
+from . import ai, crawler, db, resume_model as rm, resumes, seed
 
 logging.getLogger("pypdf").setLevel(logging.ERROR)
 WEB = db.ROOT / "web"
@@ -112,7 +114,7 @@ def list_vacancies(state: str = "new", q: str = "", watch: int = 0, source: str 
         sql += " AND found_at>=?"
         args.append((datetime.now() - timedelta(days=days)).isoformat())
     if q:
-        sql += " AND (lower(title) LIKE ? OR lower(company) LIKE ? OR lower(meta) LIKE ?)"
+        sql += " AND (ulower(title) LIKE ? OR ulower(company) LIKE ? OR ulower(meta) LIKE ?)"
         args += [f"%{q.lower()}%"] * 3
     sql += " ORDER BY substr(found_at,1,10) DESC, score DESC, id DESC LIMIT 600"
     return db.q(sql, args)
@@ -176,17 +178,14 @@ bulk_state = {"running": False, "done": 0, "total": 0, "error": None}
 
 
 async def tailor_many(ids):
-    """Адаптирует резюме и письмо под каждую вакансию очереди — по одной, в фоне."""
+    """Массовый отклик с ИИ: под каждую вакансию — своё резюме и письмо, одобряются автоматически."""
     bulk_state.update(running=True, done=0, total=len(ids), error=None)
     for aid in ids:
         try:
             a = get_app(aid)
-            base = resumes.main_resume()
-            if base and a["status"] == "ready":
-                vt = await vacancy_text(a)
-                prof = db.kv_get("profile", {})
-                letter = await asyncio.to_thread(ai.cover_letter, base["text"], vt, a["company"], a["role"], prof)
-                db.run("UPDATE applications SET cover=1, cover_text=? WHERE id=?", (letter, aid))
+            if a["status"] == "ready" and a.get("vacancy_id"):
+                dr = await make_draft(a["vacancy_id"])
+                await approve_draft_core(dr["id"])
         except Exception as e:  # noqa: BLE001
             bulk_state["error"] = str(e)[:200]
         bulk_state["done"] += 1
@@ -356,55 +355,214 @@ def resume_file(rid: int):
 # ---------- ИИ: адаптация под вакансию ----------
 async def vacancy_text(a):
     if a.get("vacancy_id"):
-        v = db.one("SELECT * FROM vacancies WHERE id=?", (a["vacancy_id"],))
-        if v and v["description"]:
+        v = await ensure_description(a["vacancy_id"])
+        if v["description"]:
             return v["description"]
     if not a.get("link"):
         return f"{a['role']} в {a['company']}"
-    text = await crawler.fetch_text(a["link"])
-    if a.get("vacancy_id"):
-        db.run("UPDATE vacancies SET description=? WHERE id=?", (text, a["vacancy_id"]))
-    return text
+    return await crawler.fetch_text(a["link"])
 
 
-@app.post("/api/apps/{aid}/tailor")
-async def tailor(aid: int, req: Request):
-    """Адаптирует резюме (и по желанию письмо) под вакансию из отклика."""
-    d = await req.json() if (await req.body()) else {}
+# ---------- карточка вакансии ----------
+async def ensure_description(vid, refresh=False):
+    v = db.one("SELECT * FROM vacancies WHERE id=?", (vid,))
+    if not v:
+        raise HTTPException(404, "Вакансия не найдена")
+    if (refresh or not v["description"]) and v["url"].startswith("http"):
+        try:
+            d = await crawler.fetch_vacancy(v["url"])
+            db.run("UPDATE vacancies SET description=? WHERE id=?", (d["text"], vid))
+            v["description"] = d["text"]
+        except Exception as e:  # noqa: BLE001
+            v["description"] = ""
+            v["fetch_error"] = str(e).splitlines()[0][:200]
+    return v
+
+
+def draft_row(d):
+    d = dict(d)
+    d["resume"] = json.loads(d["resume"] or "{}")
+    d["match"] = json.loads(d["match"] or "[]")
+    return d
+
+
+@app.get("/api/vacancies/{vid}/detail")
+async def vacancy_detail(vid: int, refresh: int = 0):
+    v = await ensure_description(vid, bool(refresh))
+    drafts = [draft_row(d) for d in db.q("SELECT * FROM drafts WHERE vacancy_id=? ORDER BY version DESC", (vid,))]
+    app_ = db.one("SELECT * FROM applications WHERE vacancy_id=? OR link=?", (vid, v["url"]))
+    return {"vacancy": v, "drafts": drafts, "app": app_row(app_) if app_ else None}
+
+
+@app.post("/api/apps/{aid}/vacancy")
+def app_vacancy(aid: int):
+    """Отклик из трекера → карточка вакансии (заводит запись вакансии, если её не было)."""
     a = get_app(aid)
-    base = get_resume(d["base_id"]) if d.get("base_id") else resumes.main_resume()
-    if not base:
-        raise HTTPException(400, "Сначала загрузите основное резюме")
+    if a.get("vacancy_id") and db.one("SELECT id FROM vacancies WHERE id=?", (a["vacancy_id"],)):
+        return {"vacancy_id": a["vacancy_id"]}
+    if not a.get("link"):
+        raise HTTPException(400, "У отклика нет ссылки на вакансию")
+    v = db.one("SELECT id FROM vacancies WHERE url=?", (crawler.norm_url(a["link"]),))
+    vid = v["id"] if v else db.run(
+        "INSERT INTO vacancies(source,company,title,url,score,watch,state,found_at,last_seen) VALUES(?,?,?,?,?,?,?,?,?)",
+        ("трекер", a["company"], a["role"], crawler.norm_url(a["link"]), 0, 1,
+         "applied" if a["status"] != "ready" else "saved", db.now(), db.now()))
+    db.run("UPDATE applications SET vacancy_id=? WHERE id=?", (vid, aid))
+    return {"vacancy_id": vid}
+
+
+def master():
+    m = db.kv_get("master_resume")
+    if not m:
+        raise HTTPException(400, "Сначала соберите мастер-резюме во вкладке «Резюме»")
+    return m
+
+
+async def make_draft(vid, request="", from_id=None):
+    v = await ensure_description(vid)
+    if not v["description"]:
+        raise HTTPException(502, "Не удалось прочитать текст вакансии: " + v.get("fetch_error", "пустая страница"))
+    prev = db.one("SELECT * FROM drafts WHERE id=?", (from_id,)) if from_id else None
+    prof = db.kv_get("profile", {})
     try:
-        vt = await vacancy_text(a)
-        prof = db.kv_get("profile", {})
-        out = {}
-        if d.get("resume", True):
-            html = await asyncio.to_thread(ai.tailor_resume, base["text"], vt, a["company"], a["role"])
-            fname = f"Резюме_{resumes.safe_name(prof.get('last_name', ''))}_{resumes.safe_name(prof.get('first_name', ''))}_{resumes.safe_name(a['company'])}_{resumes.safe_name(a['role'])[:30]}.pdf"
-            await resumes.html_to_pdf(html, fname)
-            rid = db.run("INSERT INTO resumes(name,kind,file,text,html,vacancy_id,created_at) VALUES(?,?,?,?,?,?,?)",
-                         (Path(fname).stem, "tailored", fname, re.sub(r"<[^>]+>", " ", html), html, a.get("vacancy_id"), db.now()))
-            db.run("UPDATE applications SET resume=?, resume_id=?, prep_date=COALESCE(NULLIF(prep_date,''),?) WHERE id=?",
-                   (Path(fname).stem, rid, today(), aid))
-            out["resume_id"] = rid
-        if d.get("cover", True):
-            letter = await asyncio.to_thread(ai.cover_letter, base["text"], vt, a["company"], a["role"], prof)
-            db.run("UPDATE applications SET cover=1, cover_text=? WHERE id=?", (letter, aid))
-    except RuntimeError as e:
+        out = await asyncio.to_thread(ai.tailor, master(), v["description"], v["company"], v["title"], prof,
+                                      request or None, json.loads(prev["resume"]) if prev else None)
+    except (RuntimeError, ValueError) as e:
         raise HTTPException(502, str(e))
+    res = rm.normalize(out.get("resume") or {})
+    ver = (db.one("SELECT COALESCE(MAX(version),0) m FROM drafts WHERE vacancy_id=?", (vid,))["m"]) + 1
+    did = db.run("""INSERT INTO drafts(vacancy_id,version,request,resume,letter,letter_short,match,changes,model,created_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                 (vid, ver, request or "", json.dumps(res, ensure_ascii=False), (out.get("letter") or "").strip(),
+                  (out.get("letter_short") or "").strip(), json.dumps(out.get("match") or [], ensure_ascii=False),
+                  out.get("changes") or "", ai.model(), db.now()))
+    return draft_row(db.one("SELECT * FROM drafts WHERE id=?", (did,)))
+
+
+@app.post("/api/vacancies/{vid}/draft")
+async def new_draft(vid: int, req: Request):
+    """Новая версия резюме и письма под вакансию; с from_id и request — правка предыдущей версии."""
+    d = await req.json() if (await req.body()) else {}
+    return await make_draft(vid, (d.get("request") or "").strip(), d.get("from_id"))
+
+
+@app.get("/api/drafts/{did}/html", response_class=HTMLResponse)
+def draft_html(did: int):
+    d = db.one("SELECT resume FROM drafts WHERE id=?", (did,))
+    if not d:
+        raise HTTPException(404)
+    return rm.render(json.loads(d["resume"]))
+
+
+@app.patch("/api/drafts/{did}")
+async def patch_draft(did: int, req: Request):
+    d = await req.json()
+    for k in ("letter", "letter_short"):
+        if k in d:
+            db.run(f"UPDATE drafts SET {k}=? WHERE id=?", (d[k], did))
+    return draft_row(db.one("SELECT * FROM drafts WHERE id=?", (did,)))
+
+
+async def approve_draft_core(did):
+    dr = db.one("SELECT * FROM drafts WHERE id=?", (did,))
+    if not dr:
+        raise HTTPException(404)
+    v = db.one("SELECT * FROM vacancies WHERE id=?", (dr["vacancy_id"],))
+    prof = db.kv_get("profile", {})
+    data = json.loads(dr["resume"])
+    fname = "_".join(x for x in ["Резюме", resumes.safe_name(prof.get("last_name", "")), resumes.safe_name(prof.get("first_name", "")),
+                                  resumes.safe_name(v["company"])[:25], resumes.safe_name(v["title"])[:35]] if x) + f"_v{dr['version']}.pdf"
+    doc = rm.render(data)
+    await resumes.html_to_pdf(doc, fname)
+    rid = dr["resume_id"] or db.run("INSERT INTO resumes(name,kind,file,text,html,vacancy_id,created_at) VALUES(?,?,?,?,?,?,?)",
+                                    (Path(fname).stem, "tailored", fname, rm.plain_text(data), doc, v["id"], db.now()))
+    db.run("UPDATE resumes SET file=?, text=?, html=? WHERE id=?", (fname, rm.plain_text(data), doc, rid))
+    db.run("UPDATE drafts SET approved=(id=?), resume_id=CASE WHEN id=? THEN ? ELSE resume_id END WHERE vacancy_id=?",
+           (did, did, rid, v["id"]))
+    a = db.one("SELECT * FROM applications WHERE vacancy_id=? OR link=?", (v["id"], v["url"]))
+    track = "Стажировка" if re.search(r"стаж|intern|trainee", v["title"], re.I) else "Работа"
+    if a and a["status"] != "ready":
+        return get_app(a["id"])   # отклик уже подан: что ушло работодателю, не переписываем
+    if a:
+        db.run("""UPDATE applications SET resume=?, resume_id=?, cover=1, cover_text=?, cover_short=?, vacancy_id=?,
+                  prep_date=COALESCE(NULLIF(prep_date,''),?), updated_at=? WHERE id=?""",
+               (Path(fname).stem, rid, dr["letter"], dr["letter_short"], v["id"], today(), db.now(), a["id"]))
+        aid = a["id"]
+    else:
+        aid = db.run("""INSERT INTO applications(company,role,track,status,link,resume,resume_id,cover,cover_text,cover_short,prep_date,history,vacancy_id,created_at,updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (v["company"], v["title"], track, "ready", v["url"], Path(fname).stem, rid, 1, dr["letter"], dr["letter_short"],
+                      today(), json.dumps([{"s": "ready", "at": today()}]), v["id"], db.now(), db.now()))
+        db.run("UPDATE vacancies SET state='saved' WHERE id=? AND state!='applied'", (v["id"],))
     return get_app(aid)
 
 
-@app.post("/api/resumes/{rid}/rebuild")
-async def rebuild_pdf(rid: int, req: Request):
-    """Пересобрать PDF после ручной правки HTML адаптированного резюме."""
+@app.post("/api/drafts/{did}/approve")
+async def approve_draft(did: int):
+    """Эта версия нравится: PDF, отклик «Готово к подаче» с этим резюме и письмом."""
+    return await approve_draft_core(did)
+
+
+# ---------- мастер-резюме ----------
+@app.get("/api/master")
+def get_master():
+    return {"master": db.kv_get("master_resume"), "model": ai.model()}
+
+
+@app.get("/api/master/html", response_class=HTMLResponse)
+def master_html():
+    m = db.kv_get("master_resume")
+    return rm.render(m) if m else "<p style='font-family:sans-serif;padding:24px'>Мастер-резюме ещё не собрано.</p>"
+
+
+@app.post("/api/master/build")
+async def master_build(req: Request):
+    """Собрать мастер-резюме из загруженного резюме (по умолчанию — основного)."""
+    d = await req.json() if (await req.body()) else {}
+    r = get_resume(d["resume_id"]) if d.get("resume_id") else resumes.main_resume()
+    if not r or not r["text"]:
+        raise HTTPException(400, "Загрузите резюме во вкладке «Резюме»")
+    try:
+        m = rm.normalize(await asyncio.to_thread(ai.master_from_text, r["text"]))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(502, str(e))
+    db.kv_set("master_resume", m)
+    return {"master": m}
+
+
+@app.post("/api/master/edit")
+async def master_edit(req: Request):
     d = await req.json()
-    r = get_resume(rid)
-    html = d.get("html", r["html"])
-    fname = r["file"] or f"{resumes.safe_name(r['name'])}.pdf"
-    await resumes.html_to_pdf(html, fname)
-    db.run("UPDATE resumes SET html=?, text=?, file=? WHERE id=?", (html, re.sub(r"<[^>]+>", " ", html), fname, rid))
+    if not (d.get("request") or "").strip():
+        raise HTTPException(400, "Напишите, что поменять")
+    try:
+        m = rm.normalize(await asyncio.to_thread(ai.edit_resume, master(), d["request"]))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(502, str(e))
+    db.kv_set("master_resume", m)
+    return {"master": m}
+
+
+@app.put("/api/master")
+async def master_put(req: Request):
+    d = await req.json()
+    db.kv_set("master_resume", rm.normalize(d))
+    return {"master": db.kv_get("master_resume")}
+
+
+@app.post("/api/master/pdf")
+async def master_pdf():
+    """PDF из мастер-резюме — становится основным (уходит в отклики без адаптации)."""
+    m = master()
+    prof = db.kv_get("profile", {})
+    fname = "_".join(x for x in ["Резюме", resumes.safe_name(prof.get("last_name", "")), resumes.safe_name(prof.get("first_name", "")), "основное"] if x) + ".pdf"
+    doc = rm.render(m)
+    await resumes.html_to_pdf(doc, fname)
+    ex = db.one("SELECT id FROM resumes WHERE file=?", (fname,))
+    rid = ex["id"] if ex else db.run("INSERT INTO resumes(name,kind,file,created_at) VALUES(?,?,?,?)", ("Основное (из мастер-резюме)", "base", fname, db.now()))
+    db.run("UPDATE resumes SET text=?, html=?, kind='base' WHERE id=?", (rm.plain_text(m), doc, rid))
+    db.run("UPDATE resumes SET is_main=0")
+    db.run("UPDATE resumes SET is_main=1 WHERE id=?", (rid,))
     return get_resume(rid)
 
 
@@ -423,7 +581,7 @@ async def put_profile(req: Request):
 
 @app.get("/api/settings")
 def get_settings():
-    return {"auto_crawl": db.kv_get("auto_crawl", {"enabled": True, "hours": 6})}
+    return {"auto_crawl": db.kv_get("auto_crawl", {"enabled": True, "hours": 6}), "ai": {"model": ai.model()}}
 
 
 @app.put("/api/settings")
@@ -431,6 +589,8 @@ async def put_settings(req: Request):
     d = await req.json()
     if "auto_crawl" in d:
         db.kv_set("auto_crawl", d["auto_crawl"])
+    if d.get("ai", {}).get("model") in ("sonnet", "haiku", "opus"):
+        db.kv_set("ai", {"model": d["ai"]["model"]})
     return get_settings()
 
 
@@ -491,8 +651,10 @@ def autofill(url: str = "", app_id: int = 0):
         nxt = queue_next(a["id"])
         queue = {"pos": ids.index(a["id"]) + 1 if a["id"] in ids else 0, "total": len(items),
                  "next_url": nxt["link"] if nxt else "", "next_id": nxt["id"] if nxt else 0}
+    short = (a or {}).get("cover_short") or ""
     return {
         "queue": queue,
+        "cover_short": short,
         "app": {k: a[k] for k in ("id", "company", "role", "status")} if a else None,
         "profile": {**prof, "full_name": full},
         "cover_letter": letter,

@@ -3,7 +3,7 @@ import asyncio
 import json
 from datetime import date, timedelta
 
-from . import db, resumes
+from . import db, resume_model as rm, resumes
 
 PROFILE = {
     "last_name": "Петрова", "first_name": "Анна", "middle_name": "Сергеевна",
@@ -61,12 +61,60 @@ VACANCIES = [  # компания, вакансия, источник, мета,
 ]
 
 
+MASTER = {
+    "name": "Петрова Анна Сергеевна",
+    "headline": "Junior Product Manager · продуктовая аналитика, эксперименты, AI-инструменты",
+    "contacts": ["Москва", "anna.petrova@example.com", "+7 900 000-00-00", "Telegram @anna_pm_demo"],
+    "about": "Начинающий продакт-менеджер с бэкграундом продуктового аналитика. Считаю воронки, формулирую гипотезы и довожу их до A/B-тестов; собираю дашборды, которыми пользуется команда.",
+    "experience": [
+        {"company": "ООО «Пример Маркет»", "location": "Москва", "period": "2024 – наст. время", "role": "Стажёр продакт-менеджера",
+         "context": "Маркетплейс товаров для дома, 2 млн покупателей в месяц.",
+         "projects": [{"name": "Онбординг новых покупателей", "bullets": ["Запустила новый онбординг: +12 % конверсии в первую покупку за 6 недель.", "Провела 15 интервью с пользователями и собрала бэклог из 30 гипотез."]},
+                      {"name": "Аналитика удержания", "bullets": ["Собрала дашборд retention в SQL и Metabase; им пользуется вся продуктовая команда.", "Нашла сегмент с оттоком 40 % на второй неделе, предложила и проверила 3 гипотезы."]}]},
+    ],
+    "education": [{"org": "НИУ «Пример»", "period": "2021 – 2025", "degree": "Бакалавр, прикладная информатика"}],
+    "skills": [{"group": "Продукт", "items": "CustDev, гипотезы, A/B-тесты, бэклог и приоритизация, роадмап"},
+               {"group": "Данные", "items": "SQL, Python (pandas), Amplitude, Metabase"},
+               {"group": "Инструменты", "items": "Figma, Jira, Notion"}, {"group": "Языки", "items": "русский — родной, английский — B2"}],
+    "extra": ["Финалистка кейс-чемпионата по продуктовой аналитике (2024)."],
+    "interests": "настольные игры, бег, фотография",
+}
+
+DRAFT = {
+    "resume": {**MASTER, "headline": "Менеджер продукта · AI-ассистенты, эксперименты, продуктовая аналитика",
+               "about": "Продакт с аналитическим бэкграундом: запускаю фичи от интервью до A/B-теста и считаю, что они дали. Для AI-ассистента сильна в гипотезах о сценариях использования и метриках качества ответов."},
+    "letter": "Здравствуйте! Откликаюсь на роль менеджера продукта ИИ-компаньона: хочу работать над продуктом, где ценность измеряется тем, вернётся ли человек завтра.\n\nНа стажировке я запустила онбординг, который поднял конверсию в первую покупку на 12 %, и собрала дашборд удержания, по которому команда принимает решения. Сценарии ИИ-компаньона хочу развивать так же: от интервью до эксперимента.\n\nБуду рада обсудить задачи команды.\nАнна Петрова, +7 900 000-00-00",
+    "letter_short": "Здравствуйте! Продакт с аналитическим бэкграундом: онбординг +12 % к конверсии, дашборд удержания для команды. Хочу развивать ИИ-компаньона от гипотез до экспериментов. Анна Петрова, +7 900 000-00-00",
+    "match": [{"req": "Опыт запуска продуктовых фич", "evidence": "Онбординг: +12 % конверсии за 6 недель", "level": "strong"},
+              {"req": "Работа с метриками и экспериментами", "evidence": "A/B-тесты, дашборд retention в SQL и Metabase", "level": "strong"},
+              {"req": "Исследования пользователей", "evidence": "15 интервью, бэклог из 30 гипотез", "level": "strong"},
+              {"req": "Понимание LLM-продуктов", "evidence": "Пользуется AI-инструментами, коммерческого опыта с LLM нет", "level": "partial"},
+              {"req": "Опыт B2C-продукта от 1 года", "evidence": "Стажировка в маркетплейсе — меньше года", "level": "partial"}],
+    "changes": "Заголовок и «О себе» — под AI-ассистента; на первом месте эксперименты и метрики удержания",
+}
+
+
+VACANCY_TEXT = """Менеджер продукта ИИ-компаньона
+Чем предстоит заниматься
+Развивать сценарии использования ИИ-компаньона в подписке
+Формулировать гипотезы и проверять их в A/B-экспериментах
+Работать с метриками удержания и качества ответов
+Проводить исследования с пользователями
+Мы ждём
+Опыт запуска продуктовых фич от 1 года
+Умение работать с данными: SQL, продуктовые метрики
+Интерес к LLM-продуктам
+Мы предлагаем
+Гибридный формат, сильную команду, ДМС с первого дня"""
+
+
 def run():
     db.init()
     if db.one("SELECT id FROM applications LIMIT 1"):
         return
     db.kv_set("profile", PROFILE)
     db.kv_set("auto_crawl", {"enabled": False, "hours": 6})
+    db.kv_set("master_resume", rm.normalize(MASTER))
     asyncio.run(resumes.html_to_pdf(RESUME_HTML, "Резюме_Петрова_Анна_общее.pdf"))
     main = db.run("INSERT INTO resumes(name,kind,file,text,html,is_main,created_at) VALUES(?,?,?,?,?,1,?)",
                   ("Общее (RU)", "base", "Резюме_Петрова_Анна_общее.pdf", RESUME_HTML, RESUME_HTML, db.now()))
@@ -90,6 +138,11 @@ def run():
         ts = (today - timedelta(days=0 if i < 7 else 1)).isoformat() + "T09:00:00"
         db.run("INSERT INTO vacancies(source,company,title,url,meta,score,watch,state,found_at,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",
                (src, co, title, f"https://example.com/vacancy/{i}", meta, score, watch, "new", ts, ts))
+    vid = db.one("SELECT id FROM vacancies WHERE title LIKE 'Менеджер продукта ИИ-компаньона%'")["id"]
+    db.run("UPDATE vacancies SET description=? WHERE id=?", (VACANCY_TEXT, vid))
+    db.run("""INSERT INTO drafts(vacancy_id,version,resume,letter,letter_short,match,changes,model,created_at)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (vid, 1, json.dumps(rm.normalize(DRAFT["resume"]), ensure_ascii=False), DRAFT["letter"],
+              DRAFT["letter_short"], json.dumps(DRAFT["match"], ensure_ascii=False), DRAFT["changes"], "sonnet", db.now()))
     db.run("INSERT INTO runs(started_at,finished_at,found,new,log) VALUES(?,?,?,?,?)",
            (db.now(), db.now(), len(VACANCIES), len(VACANCIES), "demo"))
 

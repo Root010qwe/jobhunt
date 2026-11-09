@@ -1,73 +1,132 @@
-"""Адаптация резюме и сопроводительные письма через локальный Claude Code (`claude -p`)."""
-import re
+"""ИИ через локальный Claude Code (`claude -p`): мастер-резюме, адаптация под вакансию, письма."""
+import json
 import shutil
 import subprocess
 
-from . import db
+from . import db, resume_model as rm
 
 CLAUDE = shutil.which("claude") or str(db.Path.home() / ".local/bin/claude")
 
 
-def ask(prompt, timeout=300):
+def model():
+    return (db.kv_get("ai", {}) or {}).get("model") or "sonnet"
+
+
+def ask(prompt, timeout=420, mdl=None):
     try:
-        r = subprocess.run([CLAUDE, "-p", "--output-format", "text"], input=prompt, capture_output=True,
-                           text=True, timeout=timeout, cwd=str(db.DATA))
+        r = subprocess.run([CLAUDE, "-p", "--model", mdl or model(), "--output-format", "text"], input=prompt,
+                           capture_output=True, text=True, timeout=timeout, cwd=str(db.DATA))
     except FileNotFoundError:
-        raise RuntimeError("Не найден Claude Code (команда claude). Установите его или пишите тексты вручную.")
+        raise RuntimeError("Не найден Claude Code (команда claude). Установите его и войдите в аккаунт.")
     except subprocess.TimeoutExpired:
-        raise RuntimeError("Claude не ответил за отведённое время, попробуйте ещё раз.")
+        raise RuntimeError("Модель не ответила за отведённое время, попробуйте ещё раз.")
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout or "ошибка claude").strip()[:400])
     return r.stdout.strip()
 
 
-RULES = """Правила:
-- Только факты из базового резюме. Ничего не выдумывай: ни опыта, ни цифр, ни навыков.
-- Можно переставлять акценты, переформулировать под язык вакансии, выбрасывать нерелевантное, менять заголовок-позиционирование.
-- Цифры и результаты сохраняй точными.
-- Язык — как у вакансии (русский или английский)."""
+def ask_json(prompt, mdl=None):
+    out = ask(prompt, mdl=mdl)
+    try:
+        return rm.parse_json(out)
+    except Exception:  # noqa: BLE001 — одна попытка починить ответ
+        fixed = ask("Верни только корректный JSON из этого ответа, без пояснений:\n\n" + out[:20000], mdl="haiku")
+        return rm.parse_json(fixed)
 
 
-def tailor_resume(base_text, vacancy_text, company, role):
-    prompt = f"""Ты помогаешь кандидату адаптировать резюме под конкретную вакансию.
+# ---------- мастер-резюме ----------
+def master_from_text(text):
+    return ask_json(f"""Перенеси резюме в структуру JSON. Это мастер-резюме: из него потом собираются версии под вакансии.
 
-{RULES}
-- Объём — строго одна страница A4: не больше ~3200 знаков текста, 3–4 пункта на проект, навыки одной строкой на группу.
+Правила:
+- Ничего не выдумывай и не теряй: все факты, цифры, проекты, даты — как в исходнике.
+- Интересы — только в поле interests, одной строкой. Олимпиады, буткемпы, хакатоны, курсы — в extra, по одному на пункт.
+- Образование — каждое место отдельно, с периодом.
+- Проекты внутри места работы — в projects с пунктами-результатами.
+- Навыки сгруппируй (Управление, Продукт, Технологии и данные, Инструменты, Языки).
+- Стиль: пункты начинаются с глагола результата, без воды.
 
-Верни ТОЛЬКО HTML-фрагмент (без <html>, <head>, <style>, без markdown-ограждений) такой структуры:
-<h1>ФИО</h1>
-<div class="contacts">город • email • телефон • telegram</div>
-<div class="headline">позиционирование под вакансию</div>
-<h2>О себе</h2><p>...</p>
-<h2>Опыт работы</h2>
-<div class="job"><div class="job-head"><b>Компания</b><span>даты</span></div><div class="job-role">должность</div><ul><li>...</li></ul></div>
-<h2>Образование</h2> ... <h2>Навыки</h2><ul>...</ul> <h2>Дополнительно</h2><ul>...</ul>
+Схема:
+{rm.SCHEMA_HINT}
 
+Верни только JSON.
+
+Резюме:
+<<<
+{text}
+>>>""")
+
+
+def edit_resume(data, request):
+    return ask_json(f"""Вот резюме в JSON. Внеси правку по просьбе кандидата, остальное оставь как есть.
+Не выдумывай факты, которых нет в резюме. Верни только JSON той же схемы.
+
+Просьба: {request}
+
+Резюме:
+{json.dumps(data, ensure_ascii=False)}""")
+
+
+# ---------- адаптация под вакансию ----------
+TAILOR_RULES = """Как адаптировать (это главное):
+1. Выпиши для себя обязательные и желательные требования вакансии и её ключевые слова.
+2. headline и «О себе» — под эту роль, языком вакансии: кто кандидат для них и чем закрывает их задачу.
+3. Для каждого требования найди в опыте самый близкий факт и переформулируй пункт так, чтобы связь была очевидна,
+   словами вакансии. Пример: вакансия про продукт Wi-Fi для бизнеса — подсвети интеграции, инфраструктуру,
+   B2B-заказчиков, метрики использования; про AI — LLM, RAG, автоматизацию.
+4. Переставь проекты и пункты: самое релевантное — первым. Нерелевантное сократи или убери.
+5. Покажи переносимый опыт: проектное управление → работа с бэклогом, приоритизация, запуск фич; внутренние сервисы → продуктовый подход.
+6. Навыки: сначала те, что просит вакансия и подтверждает опыт.
+7. Можно обобщать, переименовывать формулировки, переводить результаты в продуктовый язык.
+   Нельзя выдумывать работодателей, должности, сроки, цифры и технологии — это вскроется на собеседовании.
+8. Одна страница A4: не больше ~3300 знаков текста, 2–4 пункта на проект.
+9. Образование и опыт — от нового к старому. Интересы — отдельным полем.
+10. Пробелы (чего нет в опыте) не упоминай ни в резюме, ни в письме: ни «изучаю», ни «пока нет». Пробелы — только в match."""
+
+TAILOR_OUT = """Верни только JSON:
+{
+  "resume": <резюме по той же схеме>,
+  "letter": "сопроводительное письмо 600–900 знаков, 3 абзаца: почему эта роль; 2 факта, закрывающих главные требования; призыв к разговору и подпись",
+  "letter_short": "та же мысль до 250 знаков (с подписью) — для полей с лимитом 255",
+  "match": [{"req": "требование вакансии", "evidence": "чем закрываю, коротко", "level": "strong | partial | gap"}],
+  "changes": "что поменял в резюме под вакансию — 2–3 коротких пункта через «; »"
+}
+match — 4–8 главных требований. gap честно, если опыта нет."""
+
+
+def tailor(master, vacancy_text, company, role, profile, request=None, previous=None):
+    sign = ", ".join(x for x in [" ".join(x for x in [profile.get("first_name"), profile.get("last_name")] if x),
+                                   profile.get("phone"), profile.get("telegram")] if x)
+    base = previous or master
+    extra = ""
+    if previous and request:
+        extra = f"\nЭто правка предыдущей версии. Просьба кандидата: {request}\nОстальное в предыдущей версии сохрани.\n"
+    elif request:
+        extra = f"\nПожелание кандидата: {request}\n"
+    return ask_json(f"""Ты карьерный консультант, который адаптирует резюме под конкретную вакансию так, чтобы рекрутер
+за 10 секунд увидел совпадение с требованиями.
+
+{TAILOR_RULES}
+Подпись в письме: {sign}.
+{extra}
 Вакансия: {role} — {company}
-Текст вакансии:
 <<<
 {vacancy_text}
 >>>
 
-Базовое резюме:
-<<<
-{base_text}
->>>
-"""
-    html = ask(prompt)
-    html = re.sub(r"^```(?:html)?\s*|\s*```$", "", html.strip())
-    return html
+{'Предыдущая версия резюме' if previous else 'Мастер-резюме'} (JSON):
+{json.dumps(base, ensure_ascii=False)}
+{'' if not previous else chr(10) + 'Мастер-резюме, источник фактов (JSON):' + chr(10) + json.dumps(master, ensure_ascii=False)}
+
+{TAILOR_OUT}""")
 
 
 def cover_letter(base_text, vacancy_text, company, role, profile):
-    name = " ".join(x for x in [profile.get("first_name"), profile.get("last_name")] if x)
-    prompt = f"""Напиши короткое сопроводительное письмо для отклика.
-
-{RULES}
-- 600–900 символов, 3 абзаца, без воды и штампов («я ответственный», «командный игрок»).
-- Первый абзац: почему эта роль и компания. Второй: 2 факта из опыта, которые закрывают требования вакансии. Третий: готовность обсудить, контакт.
-- Подпись: {name or 'кандидат'}, {profile.get('phone', '')}, {profile.get('telegram', '')}.
-- Верни только текст письма, без заголовков и пояснений.
+    """Короткий путь для массового отклика: только письмо."""
+    sign = " ".join(x for x in [profile.get("first_name"), profile.get("last_name")] if x)
+    return ask(f"""Напиши сопроводительное письмо под вакансию: 600–900 знаков, 3 абзаца, без штампов.
+Первый абзац — почему эта роль; второй — 2 факта из резюме, которые закрывают главные требования; третий — призыв к разговору.
+Ничего не выдумывай. Подпись: {sign}, {profile.get('phone', '')}, {profile.get('telegram', '')}. Верни только текст.
 
 Вакансия: {role} — {company}
 <<<
@@ -77,9 +136,7 @@ def cover_letter(base_text, vacancy_text, company, role, profile):
 Резюме:
 <<<
 {base_text}
->>>
-"""
-    return ask(prompt)
+>>>""")
 
 
 def template_letter(profile, company, role):

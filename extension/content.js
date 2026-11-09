@@ -1,4 +1,6 @@
-// JobHunt: находит форму отклика и подставляет данные профиля, письмо и файл резюме.
+// JobHunt: заполняет форму отклика на сайте компании.
+// Работает сам только на вакансии, подготовленной в дашборде (отклик «Готово к подаче»).
+// На остальных страницах молчит, пока не нажать «Заполнить» в иконке расширения.
 (() => {
   if (window.__jobhunt) return;
   window.__jobhunt = true;
@@ -6,47 +8,55 @@
   const send = (msg) => new Promise((res) => {
     try { chrome.runtime.sendMessage(msg, (r) => res(r || { ok: false })); } catch (e) { res({ ok: false }); }
   });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const TOP = window.top === window;
 
-  // [ключ данных, регулярка по подписи поля]. Порядок важен: первое совпадение побеждает.
+  let data = null;          // ответ /api/autofill
+  let form = null;          // найденная форма отклика
+  let filled = new Map();   // поле → ключ данных
+  let revealed = false;     // уже нажимали «Откликнуться», чтобы открыть форму
+  let reported = false;
+  let badge = null;
+  let advancing = false;
+
+  // ---------- распознавание полей ----------
+  // [ключ, регулярка по подписи]. Первое совпадение побеждает.
   const RULES = [
-    ['cover_letter', /сопровод|cover|letter|о себе|расскажите|почему|мотивац|motivation|why .*(us|join|company)|комментар|сообщени|additional info|anything else/i, 'textarea'],
-    ['email', /e-?mail|почт/i],
-    ['phone', /phone|телефон|моб|mobile|^tel/i],
-    ['telegram', /telegram|телеграм|\btg\b|ник в тг/i],
-    ['full_name', /фио|имя и фамилия|фамилия.{0,3}имя|full.?name|first and last|ваше имя|your name|^name\b/i],
+    ['email', /e-?mail|эл\.? ?почт|электронн/i],
+    ['phone', /телефон|phone|мобильн|номер для связи|^tel/i],
+    ['telegram', /telegram|телеграм|\btg\b/i],
+    ['full_name', /фио|имя и фамилия|фамилия,? имя|full.?name|first and last|ваше имя|your name|^name\b/i],
     ['last_name', /фамил|last.?name|surname|family.?name/i],
     ['middle_name', /отчеств|middle.?name|patronym/i],
     ['first_name', /(^|[^а-яё])имя|first.?name|given.?name/i],
     ['linkedin', /linkedin/i],
     ['github', /github/i],
-    ['hh_url', /hh\.ru|ссылк.{0,20}резюме|резюме.{0,20}ссылк|resume.{0,10}(url|link)|cv.{0,10}(url|link)/i],
-    ['portfolio', /portfolio|портфолио|website|личный сайт|сайт/i],
-    ['birth_date', /рожден|birth/i],
-    ['city', /город|city|location|местополож|где вы (живёте|находитесь)/i],
+    ['hh_url', /hh\.ru|ссылк.{0,20}резюме|резюме.{0,20}ссылк|resume.{0,12}(url|link)|cv.{0,10}(url|link)/i],
+    ['portfolio', /portfolio|портфолио|личный сайт/i],
+    ['birth_date', /дата рожд|birth/i],
+    ['city', /^город|город прожив|city|location|местоположение/i],
     ['citizenship', /гражданств|citizenship/i],
-    ['salary', /зарплат|salary|доход|compensation|ожидани/i],
-    ['position', /должност|position|желаемая/i],
-    ['university', /вуз|университет|universit|образован|education|учебн/i],
-    ['english', /english|английск/i],
-    ['cover_letter', /о себе|расскажи|сопровод|cover.?letter|мотивац|description/i],
+    ['salary', /зарплат|salary|доход|compensation|ожидан.{0,10}(зп|з\/п|оплат)/i],
+    ['university', /вуз|университет|universit|учебн.{0,10}завед/i],
+    ['cover_letter', /сопровод|cover.?letter|о себе|расскажите|почему (вы|именно)|мотивац|why .*(us|join)|комментарий|дополнительн.{0,12}(информац|сведен)|additional info|сообщение/i],
   ];
+  const SKIP = /поиск|search|промокод|promo|captcha|капч|код из|sms|смс|пароль|password|логин|login|войти|подпис|рассылк|newsletter|subscribe/i;
+  const NOT_FORM = /подпишитесь|подписаться на рассылку|newsletter|subscribe|поиск по сайту|войти в аккаунт|авторизац/i;
+  const REVEAL = /^(откликнуться|отправить резюме|подать заявку|оставить отклик|хочу в команду|apply( now| for this job)?|respond)$/i;
+  const SUBMIT = /^(отправить|откликнуться|подать|отправить отклик|отправить заявку|отправить резюме|submit|apply|send)/i;
 
-  let data = null;
-  let filledOnce = false;
-  let reported = false;
-  let badge = null;
-  let filledTotal = 0;
-  let advancing = false;
+  const visible = (el) => {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
+  };
 
-  // Подпись поля: сначала собственные атрибуты и <label>, затем текст контейнера,
-  // но только если в контейнере одно поле (иначе подхватим подпись соседа).
+  // подпись поля: свои атрибуты и <label>; текст вокруг — только если в контейнере одно поле
   function describe(el, wide) {
     const bits = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.getAttribute('autocomplete'), el.getAttribute('data-qa'), el.title];
-    if (el.id) {
-      try { const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (l) bits.push(l.innerText); } catch (e) {}
-    }
-    const wrap = el.closest('label');
-    if (wrap) bits.push(wrap.innerText);
+    if (el.id) { try { const l = document.querySelector('label[for="' + CSS.escape(el.id) + '"]'); if (l) bits.push(l.innerText); } catch (e) {} }
+    const wrap = el.closest('label'); if (wrap) bits.push(wrap.innerText);
     const lb = el.getAttribute('aria-labelledby');
     if (lb) lb.split(/\s+/).forEach((id) => { const n = document.getElementById(id); if (n) bits.push(n.innerText); });
     if (wide) {
@@ -54,56 +64,95 @@
       for (let i = 0; p && i < 4; i++, p = p.parentElement) {
         if (p.querySelectorAll('input:not([type=hidden]), textarea, select').length > 1) break;
         const t = (p.innerText || '').trim();
-        if (t && t.length < 160) { bits.push(t); break; }
+        if (t && t.length < 200) { bits.push(t); break; }
       }
-      // подпись прямо перед полем (div с текстом, затем поле)
       const prev = el.previousElementSibling;
       if (prev && !prev.matches('input,textarea,select') && (prev.innerText || '').length < 120) bits.push(prev.innerText);
     }
-    return bits.filter(Boolean).join(' | ').replace(/\s+/g, ' ').slice(0, 400);
+    return bits.filter(Boolean).join(' | ').replace(/\s+/g, ' ').slice(0, 500);
   }
 
-  function match(el) {
+  function fieldKey(el) {
+    const type = (el.type || 'text').toLowerCase();
+    if (type === 'email') return 'email';
+    if (type === 'tel') return 'phone';
     for (const wide of [false, true]) {
       const d = describe(el, wide);
-      for (const [k, re, only] of RULES) {
-        if (only && el.tagName.toLowerCase() !== only) continue;
+      if (SKIP.test(d)) return null;
+      for (const [k, re] of RULES) {
+        if (k === 'cover_letter' && el.tagName !== 'TEXTAREA' && !/сопровод|о себе|cover|мотивац/i.test(d)) continue;
         if (re.test(d)) return k;
       }
-      if (el.tagName === 'TEXTAREA' && /письм|letter|message|текст/i.test(d)) return 'cover_letter';
+      if (el.tagName === 'TEXTAREA' && /письм|letter|текст/i.test(d)) return 'cover_letter';
     }
     return null;
   }
 
-  function visible(el) {
-    const r = el.getBoundingClientRect();
-    const s = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+  function fieldsIn(root) {
+    return [...root.querySelectorAll('input, textarea')].filter((el) => {
+      const t = (el.type || 'text').toLowerCase();
+      return !['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'search', 'range', 'color', 'image', 'reset'].includes(t) && !el.disabled;
+    });
+  }
+
+  // форма отклика: контейнер, где есть хотя бы два «наших» поля (или файл + одно)
+  function findForm(minScore = 2) {
+    const roots = new Set([...document.querySelectorAll('form, [role="dialog"], [class*="modal" i], [class*="popup" i], [class*="response" i], [class*="apply" i], [class*="feedback" i]')]);
+    let best = null, bestScore = 0;
+    for (const root of roots) {
+      if (!visible(root) || (badge && badge.contains(root))) continue;
+      const text = (root.innerText || '').slice(0, 2000);
+      const fields = fieldsIn(root).filter(visible);
+      const files = [...root.querySelectorAll('input[type=file]')];
+      const keys = new Set(fields.map(fieldKey).filter(Boolean));
+      if (NOT_FORM.test(text) && keys.size <= 1) continue;                   // подписка, поиск, вход
+      if (keys.size === 1 && keys.has('email') && !files.length) continue;   // одинокое поле email — это рассылка
+      const score = keys.size + (files.length ? 1 : 0) + (keys.has('cover_letter') ? 1 : 0);
+      // при равенстве — более узкий контейнер (форма внутри модалки, а не вся модалка)
+      if (score > bestScore || (score === bestScore && best && best.contains(root))) { best = root; bestScore = score; }
+    }
+    if (!best && minScore <= 1) {
+      // запасной вариант для кнопки «Заполнить»: вся страница
+      const keys = new Set(fieldsIn(document).filter(visible).map(fieldKey).filter(Boolean));
+      if (keys.size) return document.body;
+    }
+    return bestScore >= minScore ? best : null;
+  }
+
+  // ---------- значения ----------
+  function limitOf(el) {
+    if (el.maxLength > 0) return el.maxLength;
+    const m = describe(el, true).match(/(?:до|не более|максимум|max\.?|maximum)?\s*(\d{2,5})\s*(?:символ|знак|characters|chars)/i);
+    return m ? +m[1] : 0;
+  }
+  function fitText(full, short, limit) {
+    if (!limit || full.length <= limit) return full;
+    if (short && short.length <= limit) return short;
+    const base = short || full;
+    const cut = base.slice(0, limit);
+    const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('.\n'));
+    return end > limit * 0.5 ? cut.slice(0, end + 1) : cut.replace(/\s+\S*$/, '').slice(0, limit);
+  }
+  function valueFor(key, el) {
+    const p = data.profile || {};
+    if (key === 'cover_letter') return fitText(data.cover_letter || '', data.cover_short || '', limitOf(el));
+    if (key === 'birth_date' && p.birth_date && el.type !== 'date') return p.birth_date.split('-').reverse().join('.');
+    const v = p[key] || '';
+    const lim = limitOf(el);
+    return lim && v.length > lim ? v.slice(0, lim) : v;
   }
 
   function setValue(el, value) {
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-    const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-    el.focus();
-    setter.call(el, value);
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
-    el.style.outline = '2px solid #1FA457';
-    el.style.outlineOffset = '1px';
     el.dataset.jobhunt = '1';
-  }
-
-  function valueFor(key, el) {
-    const p = data.profile || {};
-    if (key === 'cover_letter') return data.cover_letter;
-    if (key === 'birth_date' && p.birth_date && el.type !== 'date') return p.birth_date.split('-').reverse().join('.');
-    if (key === 'phone' && p.phone) return p.phone;
-    return p[key] || '';
+    el.style.boxShadow = '0 0 0 2px rgba(31,164,87,.55)';
   }
 
   async function attachResume(input) {
-    if (!data.resume || input.dataset.jobhunt) return false;
+    if (!data.resume || filled.has(input)) return false;
     const r = await send({ type: 'file', path: data.resume.url });
     if (!r.ok) return false;
     const bin = atob(r.b64);
@@ -114,130 +163,140 @@
     input.files = dt.files;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dataset.jobhunt = '1';
+    filled.set(input, 'resume');
     return true;
   }
 
-  async function fill(force) {
-    if (!data) return 0;
+  const LABEL = { email: 'почта', phone: 'телефон', telegram: 'Telegram', full_name: 'ФИО', last_name: 'фамилия', first_name: 'имя',
+    middle_name: 'отчество', linkedin: 'LinkedIn', github: 'GitHub', hh_url: 'ссылка на резюме', portfolio: 'портфолио', birth_date: 'дата рождения',
+    city: 'город', citizenship: 'гражданство', salary: 'зарплата', university: 'вуз', cover_letter: 'письмо', resume: 'файл резюме' };
+
+  // заполняет только пустые поля формы, каждое — один раз
+  async function fillForm(root, overwrite) {
     let n = 0;
-    const fields = [...document.querySelectorAll('input, textarea')];
-    for (const el of fields) {
-      if (el.dataset.jobhunt || el.disabled || el.readOnly) continue;
-      const type = (el.type || 'text').toLowerCase();
-      if (type === 'file') {
+    for (const el of fieldsIn(root)) {
+      if (filled.has(el) && !overwrite) continue;
+      if ((el.type || '').toLowerCase() === 'file') {
         const d = describe(el, true) + ' ' + (el.accept || '');
-        if (/резюме|cv|resume|pdf|файл|attach|upload|прикреп/i.test(d) && await attachResume(el)) n++;
+        if (/резюме|cv|resume|pdf|файл|attach|upload|прикреп|документ/i.test(d) && await attachResume(el)) n++;
         continue;
       }
-      if (['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'search', 'range', 'color'].includes(type)) continue;
-      if (!visible(el) || (el.value && !force)) continue;
-      const key = type === 'email' ? 'email' : type === 'tel' ? 'phone' : match(el);
+      if (!visible(el) || el.readOnly) continue;
+      if (el.value && !overwrite) { filled.set(el, null); continue; }   // заполнено до нас — не трогаем
+      const key = fieldKey(el);
       if (!key) continue;
       const v = valueFor(key, el);
       if (!v) continue;
       setValue(el, v);
+      filled.set(el, key);
       n++;
     }
-    if (n) { filledOnce = true; filledTotal += n; showBadge(filledTotal); }
     return n;
   }
 
-  function looksLikeForm() {
-    const els = [...document.querySelectorAll('input, textarea')].filter((e) => visible(e) && !['hidden', 'search', 'checkbox', 'radio', 'submit'].includes((e.type || '').toLowerCase()));
-    if (!els.length) return false;
-    const hits = els.filter((e) => /e-?mail|почт|телефон|phone|фамил|имя|name|сопровод|cover|резюме|resume|cv/i.test(describe(e, true) + ' ' + e.type)).length;
-    return hits >= 2;
+  function emptyRequired(root) {
+    return fieldsIn(root).filter((el) => visible(el) && !el.value && (el.required || el.getAttribute('aria-required') === 'true'))
+      .map((el) => (describe(el, true).split('|').map((s) => s.trim()).find((s) => s && s.length < 40 && !/^[a-z_\-\d\[\]]+$/i.test(s)) || 'поле'))
+      .slice(0, 4);
   }
 
-  function showBadge(n) {
-    if (window.top !== window && !n) return;
+  // ---------- плашка ----------
+  function ui(text, buttons) {
+    if (!TOP && !form) return;
     if (!badge) {
       badge = document.createElement('div');
-      badge.setAttribute('style', 'position:fixed;z-index:2147483647;right:16px;bottom:16px;background:#17201B;color:#fff;font:500 13px/1.35 -apple-system,system-ui,sans-serif;padding:10px 12px;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;max-width:380px');
+      badge.setAttribute('style', 'position:fixed;z-index:2147483647;right:16px;bottom:16px;width:340px;background:#17201B;color:#fff;font:400 13px/1.4 -apple-system,system-ui,sans-serif;padding:12px 14px;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.28);display:grid;gap:8px');
       document.documentElement.appendChild(badge);
     }
-    const app = data && data.app;
-    const q = data && data.queue;
-    const head = app ? `${app.company} — ${app.role}` : 'JobHunt';
     badge.innerHTML = '';
-    const txt = document.createElement('span');
-    txt.style.flex = '1 1 100%';
-    if (q && window.top === window) {
-      txt.textContent = `Очередь ${q.pos} из ${q.total} · ${head}` + (n ? `. Заполнено полей: ${n} — проверьте.` : '.');
-    } else {
-      txt.textContent = n ? `${head}: заполнено полей — ${n}. Проверьте и отправьте.` : `${head}: заполнить форму?`;
-    }
-    badge.appendChild(txt);
-    const btn = (label, fn, quiet) => {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.setAttribute('style', 'all:unset;cursor:pointer;padding:5px 9px;border-radius:6px;white-space:nowrap;' + (quiet ? 'color:#cfd6d1;box-shadow:inset 0 0 0 1px #4a5650' : 'background:#2F45C5;color:#fff'));
-      b.addEventListener('click', fn);
-      badge.appendChild(b);
-    };
-    if (q && window.top === window) {
-      btn('Отправить и дальше', sendAndNext);
-      btn('Пропустить', skipToNext, true);
-    } else if (!n) btn('Заполнить', () => fill(false));
-    else btn('Подал', () => report(true));
+    const head = document.createElement('div');
+    head.setAttribute('style', 'display:flex;gap:8px;align-items:baseline');
+    const title = document.createElement('b');
+    title.textContent = data && data.app ? `${data.app.company} — ${data.app.role}` : 'JobHunt';
+    title.setAttribute('style', 'flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
     const x = document.createElement('button');
     x.textContent = '×';
-    x.setAttribute('style', 'all:unset;cursor:pointer;opacity:.7;padding:0 4px');
-    x.addEventListener('click', () => { badge.remove(); badge = null; });
-    badge.appendChild(x);
-  }
-
-  function say(text) { if (badge && badge.firstChild) badge.firstChild.textContent = text; }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const isVisible = (el) => el && el.getBoundingClientRect().width > 0 && getComputedStyle(el).visibility !== 'hidden';
-  const SUBMIT = /^(отправить|откликнуться|подать|submit|apply|send)/i;
-
-  function findSubmit() {
-    const all = [...document.querySelectorAll('button, input[type="submit"], [role="button"]')]
-      .filter((b) => isVisible(b) && !(badge && badge.contains(b)) && SUBMIT.test((b.innerText || b.value || '').trim()));
-    const filled = document.querySelector('[data-jobhunt]');
-    const form = filled && filled.closest('form');
-    return (form && all.find((b) => form.contains(b))) || all.find((b) => b.type === 'submit') || all[all.length - 1];
-  }
-
-  async function hhApply() {
-    // hh.ru: кнопка «Откликнуться» → (предупреждение о переезде) → модалка с письмом → «Откликнуться»
-    const open = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
-    if (open) { open.click(); await sleep(2200); }
-    const reloc = document.querySelector('[data-qa="relocation-warning-confirm"]');
-    if (reloc) { reloc.click(); await sleep(1500); }
-    const addLetter = document.querySelector('[data-qa="vacancy-response-letter-toggle"]');
-    if (addLetter) { addLetter.click(); await sleep(600); }
-    await fill(false);
-    const ok = document.querySelector('[data-qa="vacancy-response-submit-popup"], [data-qa="vacancy-response-letter-submit"]');
-    if (ok) { ok.click(); await sleep(2200); }
-    return !!(open || ok);
-  }
-
-  async function goNext(nextUrl) {
-    if (nextUrl) { say('Открываю следующую вакансию…'); await sleep(900); location.href = nextUrl; }
-    else {
-      say('Очередь закончилась. Отклики отмечены в трекере.');
-      if (badge) [...badge.querySelectorAll('button')].slice(0, -1).forEach((b) => b.remove());
+    x.setAttribute('style', 'all:unset;cursor:pointer;opacity:.6;padding:0 2px;font-size:16px');
+    x.onclick = () => { badge.remove(); badge = null; };
+    head.append(title, x);
+    const body = document.createElement('div');
+    body.setAttribute('style', 'color:#d6ddd8;white-space:pre-line');
+    body.textContent = text;
+    badge.append(head, body);
+    if (buttons && buttons.length) {
+      const row = document.createElement('div');
+      row.setAttribute('style', 'display:flex;gap:8px;flex-wrap:wrap');
+      for (const [label, fn, quiet] of buttons) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.setAttribute('style', 'all:unset;cursor:pointer;padding:6px 10px;border-radius:7px;font-weight:500;' + (quiet ? 'color:#d6ddd8;box-shadow:inset 0 0 0 1px #4a5650' : 'background:#2F45C5;color:#fff'));
+        b.onclick = fn;
+        row.appendChild(b);
+      }
+      badge.appendChild(row);
     }
   }
 
+  function summary() {
+    const keys = [...new Set([...filled.values()].filter(Boolean))].map((k) => LABEL[k] || k);
+    const q = data && data.queue;
+    let t = q ? `Очередь ${q.pos} из ${q.total}. ` : '';
+    t += keys.length ? `Заполнено: ${keys.join(', ')}.` : 'Форму не заполнял.';
+    const empty = form ? emptyRequired(form) : [];
+    if (empty.length) t += `\nЗаполните сами: ${empty.join(', ')}.`;
+    t += '\nПроверьте и отправьте.';
+    return t;
+  }
+  function showSummary() {
+    const q = data && data.queue;
+    ui(summary(), q && TOP ? [['Отправить и дальше', sendAndNext], ['Пропустить', skipToNext, true]] : [['Подал', () => report(true), true]]);
+  }
+
+  // ---------- отправка ----------
+  function pageTitle() {
+    const h = document.querySelector('h1');
+    return (h && h.innerText.trim().slice(0, 150)) || document.title.slice(0, 150);
+  }
+  async function report(manual) {
+    if (reported) return;
+    reported = true;
+    const r = await send({ type: 'submitted', payload: { url: location.href, app_id: data && data.app && data.app.id, title: pageTitle(), company: '' } });
+    if (data && data.queue && TOP && !advancing) { advancing = true; return goNext(data.queue.next_url); }
+    ui(r.ok ? 'Отмечено в трекере: «Подано».' : 'JobHunt не отвечает — отметьте отклик в трекере сами.');
+    setTimeout(() => { if (badge) { badge.remove(); badge = null; } }, 4000);
+  }
+  function watchSubmit(root) {
+    if (!root || root.__jhWatch) return;
+    root.__jhWatch = true;
+    root.addEventListener('submit', () => setTimeout(() => report(false), 600), true);
+    root.addEventListener('click', (e) => {
+      const b = e.target.closest('button, input[type="submit"], [role="button"]');
+      if (b && SUBMIT.test((b.innerText || b.value || '').trim())) setTimeout(() => report(false), 1200);
+    }, true);
+  }
+
+  function findSubmit() {
+    const scope = form || document;
+    const all = [...scope.querySelectorAll('button, input[type="submit"], [role="button"]')]
+      .filter((b) => visible(b) && !(badge && badge.contains(b)) && SUBMIT.test((b.innerText || b.value || '').trim()));
+    return all.find((b) => b.type === 'submit') || all[all.length - 1];
+  }
+  async function goNext(url) {
+    if (url) { ui('Открываю следующую вакансию…'); await sleep(800); location.href = url; }
+    else ui('Очередь закончилась. Отклики отмечены в трекере.');
+  }
   async function sendAndNext() {
     if (advancing) return;
     advancing = true;
-    say('Отправляю…');
-    let sent = false;
-    if (/(^|\.)hh\.ru$/.test(location.hostname)) sent = await hhApply();
-    else {
-      const b = findSubmit();
-      if (b) { b.click(); sent = true; await sleep(2500); }
-    }
-    if (!sent) { say('Не нашёл кнопку отправки — отправьте сами, потом «Отправить и дальше» ещё раз.'); advancing = false; return; }
-    await report(false, true);
-    await goNext(data.queue && data.queue.next_url);
+    ui('Отправляю…');
+    const b = findSubmit();
+    if (!b) { advancing = false; ui('Не нашёл кнопку отправки. Отправьте сами — следующая вакансия откроется после этого.'); return; }
+    b.click();
+    await sleep(2500);
+    reported = false;
+    advancing = false;
+    await report(false);
   }
-
   async function skipToNext() {
     if (advancing) return;
     advancing = true;
@@ -245,80 +304,90 @@
     await goNext(r.ok && r.data.next ? r.data.next.link : '');
   }
 
-  function pageTitle() {
-    const h = document.querySelector('h1');
-    return (h && h.innerText.trim().slice(0, 150)) || document.title.slice(0, 150);
+  // ---------- сценарий ----------
+  function findReveal() {
+    const hh = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
+    if (hh && visible(hh)) return hh;
+    return [...document.querySelectorAll('button, a, [role="button"]')]
+      .find((b) => visible(b) && !(badge && badge.contains(b)) && REVEAL.test((b.innerText || '').trim()) &&
+        !(b.tagName === 'A' && b.href && new URL(b.href, location.href).host !== location.host));
   }
 
-  async function report(manual, inQueue) {
-    if (reported) return;
-    reported = true;
-    const r = await send({ type: 'submitted', payload: { url: location.href, app_id: data && data.app && data.app.id, title: pageTitle(), company: '' } });
-    if (inQueue) return;
-    if (data && data.queue && window.top === window && !advancing) {  // отправили сами в режиме очереди — едем дальше
-      advancing = true;
-      say('Отмечено «Подано».');
-      return goNext(data.queue.next_url);
+  async function step() {
+    const f = findForm(2);
+    if (f) {
+      form = f;
+      watchSubmit(f);
+      const n = await fillForm(f, false);
+      if (n || !badge) showSummary();
+      return true;
     }
-    if (badge) {
-      badge.firstChild.textContent = r.ok ? 'Отмечено в JobHunt как «Подано».' : 'JobHunt недоступен — отметьте отклик вручную.';
-      [...badge.querySelectorAll('button')].slice(0, -1).forEach((b) => b.remove());
-      setTimeout(() => { if (badge) { badge.remove(); badge = null; } }, 5000);
+    if (!revealed && TOP) {
+      const b = findReveal();
+      if (b && /(^|\.)hh\.ru$/.test(location.hostname)) {
+        // на hh.ru «Откликнуться» часто сразу отправляет отклик — нажимает только сам человек
+        if (!badge) ui('Нажмите — откроется отклик на hh.ru, я вставлю письмо. Если письмо не требуется, hh отправит отклик сразу.',
+          [['Откликнуться на hh.ru', async () => {
+            revealed = true; b.click(); ui('Откликаюсь…');
+            await sleep(1500);
+            const reloc = document.querySelector('[data-qa="relocation-warning-confirm"]'); if (reloc) { reloc.click(); await sleep(1200); }
+            const letter = document.querySelector('[data-qa="vacancy-response-letter-toggle"]'); if (letter) { letter.click(); await sleep(700); }
+            if (!(await step())) setTimeout(() => { if (!form) report(false); }, 2000);
+          }]]);
+        return false;
+      }
+      if (b) {
+        revealed = true;
+        ui('Открываю форму отклика…');
+        b.click();
+        for (const ms of [700, 1500, 3000]) setTimeout(() => { if (!form) step(); }, ms);
+        // hh.ru: предупреждение о другом городе и кнопка «Написать сопроводительное»
+        await sleep(1500);
+        const reloc = document.querySelector('[data-qa="relocation-warning-confirm"]'); if (reloc) reloc.click();
+        const letter = document.querySelector('[data-qa="vacancy-response-letter-toggle"]'); if (letter) { await sleep(500); letter.click(); }
+      }
     }
-    if (!manual) return;
+    return false;
   }
 
-  // отправка формы после автозаполнения → «Подано»
-  document.addEventListener('submit', () => { if (filledOnce) report(false); }, true);
-  document.addEventListener('click', (e) => {
-    if (!filledOnce) return;
-    const b = e.target.closest('button, input[type="submit"], [role="button"]');
-    if (!b) return;
-    const t = (b.innerText || b.value || '').trim();
-    if (/^(отправить|откликнуться|подать|submit|apply|send|отправить отклик|отправить заявку)/i.test(t)) setTimeout(() => report(false), 800);
-  }, true);
+  async function run() {
+    const r = await send({ type: 'autofill', url: location.href, ref: document.referrer || '' });
+    if (!r.ok) return;
+    data = r.data;
+    if (!(data.app && data.app.status === 'ready')) return;   // не наша вакансия — молчим
+    await step();
+    // форма или новые поля появятся позже (модалка, шаги) — следим за страницей не дольше минуты
+    let timer = null;
+    const started = Date.now();
+    const obs = new MutationObserver((muts) => {
+      if (Date.now() - started > 60000) { obs.disconnect(); return; }
+      if (muts.every((m) => m.type === 'attributes' && m.target.dataset && m.target.dataset.jobhunt)) return;
+      clearTimeout(timer);
+      timer = setTimeout(step, 600);
+    });
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden', 'open', 'aria-hidden'] });
+    if (TOP) setTimeout(() => { if (!form && data.queue) ui('Не нашёл форму отклика на этой странице.', [['Пропустить', skipToNext, true]]); }, 15000);
+  }
 
+  // ручной режим из иконки расширения
   chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     if (msg.type === 'fill-now') {
       (async () => {
-        if (!data) await load(msg.app_id);
-        reply({ n: await fill(!!msg.force), app: data && data.app });
+        if (!data) { const r = await send({ type: 'autofill', url: location.href, ref: document.referrer || '' }); if (r.ok) data = r.data; }
+        if (!data) { reply({ n: 0 }); return; }
+        form = findForm(1);
+        if (!form && !revealed) { await step(); await sleep(2500); form = findForm(1); }
+        if (!form) { reply({ n: 0 }); return; }
+        watchSubmit(form);
+        const n = await fillForm(form, !!msg.force);
+        if (n) showSummary();
+        reply({ n, app: data.app });
       })();
       return true;
     }
     if (msg.type === 'mark-applied') { report(true).then(() => reply({ ok: true })); return true; }
   });
 
-  async function load(appId) {
-    const r = await send({ type: 'autofill', url: location.href, ref: document.referrer || '', app_id: appId });
-    if (r.ok) data = r.data;
-    return data;
-  }
-
-  // Автозапуск: если эта вакансия есть в трекере со статусом «Готово к подаче» — заполняем сами,
-  // иначе показываем кнопку «Заполнить», когда на странице есть форма.
-  const JOBPAGE = /vacanc|vacancy|job|career|ваканс|карьер|hh\.ru|apply|position|hiring|talent|recruit|стаж|intern|ashbyhq|greenhouse|lever\.co|huntflow|potok|friend\.work/i;
-  let tries = 0;
-  let timer = null;
-  async function tick() {
-    tries++;
-    if (!data) await load();
-    if (!data) return;
-    const ready = data.app && data.app.status === 'ready';
-    if (ready) {
-      await fill(false);
-      if (data.queue && !badge && window.top === window) showBadge(filledTotal);
-    } else if (!badge && JOBPAGE.test(location.href + ' ' + document.title) && looksLikeForm()) {
-      showBadge(0);
-    }
-  }
-  // Формы часто появляются позже (модалка после «Откликнуться») — проверяем страницу 2 минуты.
-  const started = Date.now();
-  let busy = false;
-  const iv = setInterval(async () => {
-    if (Date.now() - started > 120000) { clearInterval(iv); return; }
-    if (busy) return;
-    busy = true;
-    try { await tick(); } finally { busy = false; }
-  }, 1500);
+  if (document.readyState === 'complete') setTimeout(run, 800);
+  else window.addEventListener('load', () => setTimeout(run, 800));
 })();

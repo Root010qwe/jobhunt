@@ -111,10 +111,31 @@
   <header class="top">
     <div>
       <h1>Резюме</h1>
-      <p class="lede">Основное уходит в отклики по умолчанию. Версии под вакансию создаются из отклика.</p>
+      <p class="lede">Мастер-резюме — источник фактов. Версии под вакансии собираются из него в карточке вакансии.</p>
     </div>
     <label class="btn primary upl">Загрузить резюме<input type="file" id="upload" accept=".pdf,.docx,.txt,.md" hidden></label>
   </header>
+  <section class="card master" id="master">
+    <div class="master-head">
+      <div>
+        <h2 class="h2">Мастер-резюме</h2>
+        <p class="hint">Все ваши факты в одной структуре. Из него собирается резюме под каждую вакансию — вёрстка всегда одна, меняется только содержание.</p>
+      </div>
+      <div class="inline-actions">
+        <button type="button" class="mini" id="m-build">Собрать из основного резюме</button>
+        <button type="button" class="mini" id="m-pdf">Сделать основным PDF</button>
+      </div>
+    </div>
+    <div class="master-body">
+      <div class="paper" id="m-paper"><iframe title="Мастер-резюме" id="m-frame"></iframe></div>
+      <div class="master-side">
+        <label class="lbl" for="m-req">Что поменять</label>
+        <textarea id="m-req" class="field-in" rows="4" placeholder="Например: добавь в навыки SQL на уровне JOIN и оконных функций; про IoT пиши «платформа мониторинга»"></textarea>
+        <button type="button" class="btn primary" id="m-edit">Изменить</button>
+        <p class="hint" id="m-st"></p>
+      </div>
+    </div>
+  </section>
   <div class="rgrid" id="rlist"></div>
 </main>
 
@@ -162,14 +183,14 @@
     <div class="f wide"><label for="f-link">Ссылка на вакансию</label><input type="url" id="f-link" placeholder="https://" autocomplete="off"></div>
     <div class="f wide"><label for="f-resume">Резюме</label><select id="f-resume"></select>
       <div class="inline-actions">
-        <button type="button" class="mini" id="tailor">Адаптировать под вакансию (ИИ)</button>
+        <button type="button" class="mini" id="tailor">Открыть вакансию и подготовить резюме</button>
         <button type="button" class="mini" id="open-resume">Открыть файл</button>
       </div>
       <p class="hint" id="tailor-st"></p>
     </div>
     <div class="f wide"><label for="f-cover_text">Сопроводительное письмо</label><textarea id="f-cover_text" rows="7"></textarea>
       <div class="inline-actions">
-        <button type="button" class="mini" id="cover-ai">Написать под вакансию (ИИ)</button>
+        <button type="button" class="mini" id="cover-ai">Письмо под вакансию</button>
         <button type="button" class="mini" id="cover-tpl">Из шаблона</button>
         <button type="button" class="mini" id="cover-copy">Скопировать</button>
       </div>
@@ -193,6 +214,65 @@
 </aside>
 
 <!-- просмотр резюме -->
+<aside class="vsheet" id="vsheet" role="dialog" aria-modal="true" aria-labelledby="vs-title" hidden>
+  <div class="vs-top">
+    <div class="vs-titles">
+      <div class="vs-title" id="vs-title"></div>
+      <div class="vs-meta" id="vs-meta"></div>
+    </div>
+    <a class="mini" id="vs-open" target="_blank" rel="noopener">На сайте ↗</a>
+    <button type="button" class="mini ghost" id="vs-close" aria-label="Закрыть">Закрыть</button>
+  </div>
+  <div class="vs-body">
+    <section class="vs-desc">
+      <div class="vs-text" id="vs-text"></div>
+    </section>
+    <section class="vs-work" id="vs-work">
+      <div class="vs-empty" id="vs-empty">
+        <div class="h2">Отклик на эту вакансию</div>
+        <p class="hint">Соберу резюме под требования вакансии из вашего мастер-резюме, напишу письмо (полное и короткое для полей с лимитом) и покажу, какие требования закрываете.</p>
+        <label class="lbl" for="vs-wish">Пожелания, если есть</label>
+        <textarea id="vs-wish" class="field-in" rows="2" placeholder="Например: делай упор на аналитику и метрики"></textarea>
+        <button type="button" class="btn primary" id="vs-make">Подготовить резюме и письмо</button>
+      </div>
+      <div class="vs-draft" id="vs-draft" hidden>
+        <div class="vs-bar">
+          <select class="field-in" id="vs-ver" aria-label="Версия"></select>
+          <div class="seg" role="tablist" id="vs-tabs">
+            <button type="button" data-t="resume" aria-selected="true">Резюме</button>
+            <button type="button" data-t="letter" aria-selected="false">Письмо</button>
+            <button type="button" data-t="match" aria-selected="false">Требования</button>
+          </div>
+        </div>
+        <p class="vs-changes" id="vs-changes"></p>
+        <div class="vs-pane" data-p="resume"><div class="paper" id="vs-paper"><iframe title="Резюме под вакансию" id="vs-frame"></iframe></div></div>
+        <div class="vs-pane" data-p="letter" hidden>
+          <label class="lbl" for="vs-letter">Письмо <span class="cnt" id="vs-lc"></span></label>
+          <textarea id="vs-letter" class="field-in" rows="11"></textarea>
+          <label class="lbl" for="vs-short">Короткое — для полей с лимитом <span class="cnt" id="vs-sc"></span></label>
+          <textarea id="vs-short" class="field-in" rows="5"></textarea>
+          <div class="inline-actions"><button type="button" class="mini" id="vs-save-l">Сохранить текст</button></div>
+        </div>
+        <div class="vs-pane" data-p="match" hidden><ul class="match" id="vs-match"></ul></div>
+        <div class="vs-edit">
+          <label class="lbl" for="vs-req">Что изменить</label>
+          <div class="vs-edit-row">
+            <input id="vs-req" class="field-in" placeholder="Например: убери Playrix, добавь про работу с подрядчиками в «О себе»">
+            <button type="button" class="btn" id="vs-redo">Перегенерировать</button>
+          </div>
+        </div>
+        <div class="vs-actions">
+          <span class="hint" id="vs-st"></span>
+          <span class="sp"></span>
+          <button type="button" class="btn" id="vs-keep">Сохранить без отклика</button>
+          <button type="button" class="btn primary" id="vs-apply">Откликнуться с этой версией</button>
+        </div>
+      </div>
+      <div class="vs-busy" id="vs-busy" hidden><div class="spin"></div><div id="vs-busy-t">Читаю вакансию и пишу резюме…</div></div>
+    </section>
+  </div>
+</aside>
+
 <aside class="sheet wide-sheet" id="rsheet" role="dialog" aria-modal="true" hidden>
   <h2 id="r-title">Резюме</h2>
   <div class="inline-actions">

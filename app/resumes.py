@@ -64,20 +64,19 @@ def safe_name(s):
     return re.sub(r"[^\w\-]+", "_", s, flags=re.U).strip("_")[:60]
 
 
-async def html_to_pdf(fragment: str, filename: str) -> Path:
+async def html_to_pdf(doc: str, filename: str) -> Path:
+    """HTML → PDF на одну страницу A4 (мелче 80 % не ужимаем — тогда пусть будет вторая страница)."""
     from playwright.async_api import async_playwright
     out = DIR / filename
-    doc = f"<!doctype html><html><head><meta charset='utf-8'><style>{PDF_CSS}</style></head><body>{fragment}</body></html>"
+    if not doc.lstrip().lower().startswith("<!doctype"):
+        doc = f"<!doctype html><html><head><meta charset='utf-8'><style>{PDF_CSS}</style></head><body>{doc}</body></html>"
     async with async_playwright() as p:
         b = await p.chromium.launch()
-        page = await b.new_page()
-        await page.set_viewport_size({"width": 680, "height": 1000})  # ширина A4 минус поля, в CSS-пикселях
+        page = await b.new_page(viewport={"width": 794, "height": 1123})
         await page.set_content(doc, wait_until="load")
-        # подгоняем под одну страницу: уменьшаем масштаб, но не мельче 80 %
-        h = await page.evaluate("document.body.scrollHeight")
-        limit = 1010  # высота A4 минус поля, в CSS-пикселях
-        if h > limit:
-            await page.evaluate(f"document.body.style.zoom = {max(0.8, limit / h * 0.98):.3f}")
-        await page.pdf(path=str(out), format="A4", print_background=True)
+        h = await page.evaluate("(document.querySelector('.page') || document.body).scrollHeight")
+        if h > 1123:
+            await page.evaluate(f"document.body.style.zoom = {max(0.8, 1123 / h * 0.995):.3f}")
+        await page.pdf(path=str(out), format="A4", print_background=True, prefer_css_page_size=True)
         await b.close()
     return out
