@@ -304,6 +304,126 @@
     await goNext(r.ok && r.data.next ? r.data.next.link : '');
   }
 
+
+  // ---------- вопросы работодателя (анкета, тестовое) ----------
+  const IDENTITY = new Set(['email', 'phone', 'telegram', 'full_name', 'last_name', 'first_name', 'middle_name', 'linkedin', 'github', 'hh_url', 'portfolio', 'birth_date', 'city', 'citizenship']);
+  const CONSENT = /согласи|персональн|политик|оферт|правил|подпис|рассылк|newsletter|запомнить|remember/i;
+  let qmap = {};
+
+  function optionText(el) {
+    const l = el.closest('label') || (el.id && document.querySelector('label[for="' + CSS.escape(el.id) + '"]'));
+    const t = (l && l.innerText) || el.getAttribute('aria-label') || (el.nextElementSibling && el.nextElementSibling.innerText) || el.value || '';
+    return t.trim().replace(/\s+/g, ' ').slice(0, 200);
+  }
+
+  function extractQuestions() {
+    const all = [...document.querySelectorAll('input, textarea')].filter((el) => !(badge && badge.contains(el)) && !el.disabled);
+    const groups = [];
+    const byName = {};
+    for (const el of all) {
+      const type = (el.type || 'text').toLowerCase();
+      if (type === 'radio' || type === 'checkbox') {
+        if (!visible(el) && !visible(el.closest('label') || el.parentElement)) continue;
+        if (CONSENT.test(optionText(el))) continue;
+        const key = type + ':' + (el.name || el.id);
+        if (!byName[key]) { byName[key] = { type, els: [] }; groups.push(byName[key]); }
+        byName[key].els.push(el);
+      } else if (el.tagName === 'TEXTAREA' || ['text', ''].includes(type)) {
+        if (!visible(el) || el.readOnly) continue;
+        const k = fieldKey(el);
+        if (k && (IDENTITY.has(k) || k === 'cover_letter' && /сопровод|cover/i.test(describe(el, true)))) continue;
+        if (SKIP.test(describe(el, false))) continue;
+        groups.push({ type: el.tagName === 'TEXTAREA' ? 'textarea' : 'text', els: [el] });
+      }
+    }
+    const controls = new Set(all);
+    const qs = [];
+    qmap = {};
+    groups.forEach((g, i) => {
+      // текст вопроса: самый широкий контейнер, где нет полей других вопросов
+      let box = g.els[0].parentElement;
+      while (box && !g.els.every((e) => box.contains(e))) box = box.parentElement;
+      for (let k = 0; box && box.parentElement && k < 6; k++) {
+        const up = box.parentElement;
+        const foreign = [...up.querySelectorAll('input, textarea')].some((e) => controls.has(e) && !g.els.includes(e) && visible(e));
+        if (foreign || (up.innerText || '').length > 3000) break;
+        box = up;
+      }
+      let text = (box ? box.innerText : '') || '';
+      const opts = g.type === 'radio' || g.type === 'checkbox' ? g.els.map(optionText) : [];
+      for (const o of opts) if (o) text = text.split(o).join(' ');
+      text = text.replace(/\s+/g, ' ').trim().slice(0, 1500) || describe(g.els[0], true);
+      const id = 'q' + (i + 1);
+      qmap[id] = g;
+      const lim = g.els[0].maxLength > 0 ? g.els[0].maxLength : 0;
+      qs.push({ id, type: g.type, question: text, options: opts, max_length: lim || undefined });
+    });
+    return qs;
+  }
+
+  function pickOption(g, wanted) {
+    const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    let n = 0;
+    for (const w of wanted || []) {
+      const el = g.els.find((e) => norm(optionText(e)) === norm(w)) || g.els.find((e) => norm(optionText(e)).includes(norm(w)) || norm(w).includes(norm(optionText(e))));
+      if (el && !el.checked) { (el.closest('label') || el).click(); if (!el.checked) el.click(); n++; }
+      else if (el) n++;
+    }
+    return n;
+  }
+
+  async function answerQuestions() {
+    const qs = extractQuestions();
+    // поле письма: если готового письма под эту вакансию нет — попросим написать его вместе с ответами
+    const letterEl = [...document.querySelectorAll('textarea')].find((t) => visible(t) && !t.value && /сопровод|cover|letter/i.test(describe(t, true)));
+    if (letterEl && (!data || data.letter_is_template)) {
+      qmap.letter = { type: 'letter', els: [letterEl] };
+      qs.push({ id: 'letter', type: 'letter', question: 'Сопроводительное письмо к этой вакансии', options: [], max_length: letterEl.maxLength > 0 ? letterEl.maxLength : undefined });
+    }
+    if (!qs.length) { ui('На этой странице не нашёл вопросов, на которые нужно ответить.'); return 0; }
+    ui(`Нашёл вопросов: ${qs.length}. Отвечаю — обычно до минуты…`);
+    const h1 = document.querySelector('h1');
+    const r = await send({ type: 'answer-questions', payload: {
+      url: location.href, ref: document.referrer || '', title: (h1 && h1.innerText.trim()) || document.title,
+      page_text: (document.body.innerText || '').slice(0, 6000), questions: qs } });
+    if (!r.ok) { ui('Не получилось: ' + (r.error || 'JobHunt не ответил') + '.', [['Ещё раз', answerQuestions]]); return 0; }
+    let n = 0, todo = 0;
+    for (const a of r.data.answers || []) {
+      const g = qmap[a.id];
+      if (!g) continue;
+      if (g.type === 'radio' || g.type === 'checkbox') { n += pickOption(g, a.choice) ? 1 : 0; continue; }
+      let text = a.text || '';
+      const el = g.els[0];
+      const lim = limitOf(el);
+      if (lim && text.length > lim) text = fitText(text, '', lim);
+      if (/\[уточнить/i.test(text)) todo++;
+      setValue(el, text);
+      el.style.boxShadow = '0 0 0 2px rgba(214,145,0,.7)';   // жёлтая рамка: проверьте
+      filled.set(el, 'answer');
+      n++;
+    }
+    // готовое письмо под эту вакансию (выбранная версия в JobHunt) — подставим, если поле ещё пустое
+    if (letterEl && !letterEl.value && data && !data.letter_is_template && data.cover_letter) {
+      setValue(letterEl, fitText(data.cover_letter, data.cover_short, limitOf(letterEl)));
+    }
+    const asked = qs.filter((q) => q.type !== 'letter').length;
+    const nq = Math.min(n, asked) - 0;
+    ui(`Ответил на вопросы: ${Math.min(n, asked)} из ${asked}` + (qmap.letter ? ', письмо написал под вакансию' : '') + '. Всё подсвечено жёлтым — прочитайте и поправьте.' +
+       (todo ? `\nПометок [уточнить]: ${todo} — впишите своё.` : '') + (r.data.notes ? '\n' + r.data.notes : ''),
+       [['Ответить заново', answerQuestions, true]]);
+    return n;
+  }
+
+  function offerQuestions() {
+    if (!TOP || badge) return;
+    const onHH = /hh\.ru$/.test(location.hostname) && /vacancy_response|negotiations|applicant/.test(location.pathname);
+    const qs = extractQuestions();
+    const real = qs.filter((q) => q.type !== 'text' || q.question.length > 25);
+    if (!real.length || (!onHH && real.length < 2)) return;
+    ui(`На странице вопросы работодателя: ${real.length}. Могу ответить по вашему резюме — вы потом поправите.`,
+       [['Ответить на вопросы', answerQuestions]]);
+  }
+
   // ---------- сценарий ----------
   function findReveal() {
     const hh = document.querySelector('[data-qa="vacancy-response-link-top"], [data-qa="vacancy-response-link-bottom"]');
@@ -354,7 +474,8 @@
     const r = await send({ type: 'autofill', url: location.href, ref: document.referrer || '' });
     if (!r.ok) return;
     data = r.data;
-    if (!(data.app && data.app.status === 'ready')) return;   // не наша вакансия — молчим
+    setTimeout(offerQuestions, 1500);   // анкета работодателя (hh и др.) — предложим ответить
+    if (!(data.app && data.app.status === 'ready')) return;   // не наша вакансия — формы не трогаем
     await step();
     // форма или новые поля появятся позже (модалка, шаги) — следим за страницей не дольше минуты
     let timer = null;
@@ -382,6 +503,13 @@
         const n = await fillForm(form, !!msg.force);
         if (n) showSummary();
         reply({ n, app: data.app });
+      })();
+      return true;
+    }
+    if (msg.type === 'answer-now') {
+      (async () => {
+        if (!data) { const r = await send({ type: 'autofill', url: location.href, ref: document.referrer || '' }); if (r.ok) data = r.data; }
+        reply({ n: await answerQuestions() });
       })();
       return true;
     }

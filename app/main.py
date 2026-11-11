@@ -692,6 +692,46 @@ def find_app_by_url(url):
     return None
 
 
+def _hh_vacancy_id(url):
+    m = re.search(r"(?:vacancyId=|hh\.ru/vacancy/)(\d+)", url or "")
+    return m.group(1) if m else None
+
+
+@app.post("/api/questions/answer")
+async def answer_questions(req: Request):
+    """Расширение прислало вопросы со страницы отклика — отвечаем от лица кандидата."""
+    d = await req.json()
+    questions = d.get("questions") or []
+    if not questions:
+        raise HTTPException(400, "На странице не нашлось вопросов")
+    url = d.get("url", "")
+    # контекст вакансии: из базы, иначе читаем страницу вакансии (для hh — по vacancyId)
+    a = find_app_by_url(url) or (find_app_by_url(d.get("ref", "")) if d.get("ref") else None)
+    v = None
+    if a and a.get("vacancy_id"):
+        v = db.one("SELECT * FROM vacancies WHERE id=?", (a["vacancy_id"],))
+    hid = _hh_vacancy_id(url) or _hh_vacancy_id(d.get("ref", ""))
+    if not v and hid:
+        v = db.one("SELECT * FROM vacancies WHERE url LIKE ?", (f"%hh.ru/vacancy/{hid}%",))
+    text, company, role = "", d.get("company", ""), d.get("title", "")
+    if v:
+        v = await ensure_description(v["id"])
+        text, company, role = v["description"], v.get("brand") or v["company"], v["title"]
+    elif hid:
+        try:
+            fv = await crawler.fetch_vacancy(f"https://hh.ru/vacancy/{hid}")
+            text, role = fv["text"], role or fv["title"]
+        except Exception:  # noqa: BLE001
+            pass
+    text = text or d.get("page_text", "")[:6000]
+    try:
+        out = await asyncio.to_thread(ai.answer_questions, master(), known_facts(), text, company, role,
+                                      questions, db.kv_get("profile", {}))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(502, str(e))
+    return out
+
+
 @app.get("/api/autofill")
 def autofill(url: str = "", app_id: int = 0):
     """Расширение спрашивает: что подставить на этой странице."""
@@ -717,7 +757,9 @@ def autofill(url: str = "", app_id: int = 0):
         queue = {"pos": ids.index(a["id"]) + 1 if a["id"] in ids else 0, "total": len(items),
                  "next_url": nxt["link"] if nxt else "", "next_id": nxt["id"] if nxt else 0}
     short = (a or {}).get("cover_short") or ""
+    tailored = bool(a and (a.get("cover_short") or db.one("SELECT id FROM drafts WHERE vacancy_id=? AND approved=1", (a.get("vacancy_id") or 0,))))
     return {
+        "letter_is_template": not tailored,
         "queue": queue,
         "cover_short": short,
         "app": {k: a[k] for k in ("id", "company", "role", "status")} if a else None,

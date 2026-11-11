@@ -37,3 +37,9 @@ $('#mark').onclick = async () => {
   const r = await toTab({ type: 'mark-applied' });
   $('#st').textContent = r ? 'Отмечено «Подано».' : 'Не получилось — обновите страницу.';
 };
+
+$('#answer').onclick = async () => {
+  $('#st').textContent = 'Отвечаю на вопросы — обычно до минуты. Окно можно закрыть.';
+  const r = await toTab({ type: 'answer-now' });
+  $('#st').textContent = r ? `Ответов вписано: ${r.n}. Проверьте подсвеченные поля.` : 'Не получилось — обновите страницу.';
+};
