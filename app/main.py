@@ -499,7 +499,7 @@ async def make_draft(vid, request="", from_id=None, answers=None):
                     VALUES(?,?,?,?,?,?,?,?,?,?)""",
                  (vid, ver, request or "", json.dumps(res, ensure_ascii=False), (out.get("letter") or "").strip(),
                   (out.get("letter_short") or "").strip(), json.dumps(out.get("match") or [], ensure_ascii=False),
-                  out.get("changes") or "", ai.model(), db.now()))
+                  out.get("changes") or "", ai.model("tailor"), db.now()))
     return draft_row(db.one("SELECT * FROM drafts WHERE id=?", (did,)))
 
 
@@ -571,7 +571,7 @@ async def approve_draft(did: int):
 # ---------- мастер-резюме ----------
 @app.get("/api/master")
 def get_master():
-    return {"master": db.kv_get("master_resume"), "model": ai.model()}
+    return {"master": db.kv_get("master_resume"), "model": ai.model("tailor")}
 
 
 @app.get("/api/master/html", response_class=HTMLResponse)
@@ -632,6 +632,15 @@ async def master_pdf():
 
 
 # ---------- профиль и автозаполнение ----------
+@app.get("/api/ai/usage")
+def ai_usage(days: int = 30):
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = db.q("""SELECT task, model, count(*) calls, sum(input_tokens) tin, sum(output_tokens) tout, sum(cost_usd) cost
+                   FROM ai_usage WHERE at>=? GROUP BY task, model ORDER BY cost DESC""", (since,))
+    total = db.one("SELECT count(*) calls, coalesce(sum(input_tokens),0) tin, coalesce(sum(output_tokens),0) tout, coalesce(sum(cost_usd),0) cost FROM ai_usage WHERE at>=?", (since,))
+    return {"days": days, "total": total, "by_task": rows}
+
+
 @app.get("/api/profile")
 def get_profile():
     return db.kv_get("profile", {})
@@ -646,7 +655,8 @@ async def put_profile(req: Request):
 
 @app.get("/api/settings")
 def get_settings():
-    return {"auto_crawl": db.kv_get("auto_crawl", {"enabled": True, "hours": 6}), "ai": {"model": ai.model()}}
+    models = {k: ai.model(k) for k in ai.TASK_MODELS if k != "fix"}
+    return {"auto_crawl": db.kv_get("auto_crawl", {"enabled": True, "hours": 6}), "ai": {"models": models}}
 
 
 @app.put("/api/settings")
@@ -654,8 +664,9 @@ async def put_settings(req: Request):
     d = await req.json()
     if "auto_crawl" in d:
         db.kv_set("auto_crawl", d["auto_crawl"])
-    if d.get("ai", {}).get("model") in ("sonnet", "haiku", "opus"):
-        db.kv_set("ai", {"model": d["ai"]["model"]})
+    if isinstance(d.get("ai", {}).get("models"), dict):
+        models = {k: v for k, v in d["ai"]["models"].items() if k in ai.TASK_MODELS and v in ai.MODELS}
+        db.kv_set("ai", {"models": models})
     return get_settings()
 
 
@@ -704,6 +715,16 @@ async def answer_questions(req: Request):
     questions = d.get("questions") or []
     if not questions:
         raise HTTPException(400, "На странице не нашлось вопросов")
+    # вопросы, на которые ответ лежит в профиле, — без модели
+    prof = db.kv_get("profile", {})
+    direct, rest = [], []
+    for q in questions:
+        ans = profile_answer(q, prof)
+        (direct if ans is not None else rest).append({**q, "_ans": ans})
+    answers = [{"id": q["id"], **q["_ans"]} for q in direct]
+    if not rest:
+        return {"answers": answers, "notes": "Ответил из профиля, без ИИ — проверьте значения."}
+    questions = [{k: v for k, v in q.items() if k != "_ans"} for q in rest]
     url = d.get("url", "")
     # контекст вакансии: из базы, иначе читаем страницу вакансии (для hh — по vacancyId)
     a = find_app_by_url(url) or (find_app_by_url(d.get("ref", "")) if d.get("ref") else None)
@@ -726,10 +747,39 @@ async def answer_questions(req: Request):
     text = text or d.get("page_text", "")[:6000]
     try:
         out = await asyncio.to_thread(ai.answer_questions, master(), known_facts(), text, company, role,
-                                      questions, db.kv_get("profile", {}))
+                                      questions, prof)
     except (RuntimeError, ValueError) as e:
         raise HTTPException(502, str(e))
+    out["answers"] = answers + (out.get("answers") or [])
     return out
+
+
+PROFILE_Q = [  # (регулярка по тексту вопроса, поле профиля, подпись для пометки)
+    (r"зарплат|доход|ожидани.{0,15}(оплат|вознагр|зп|з/п)|salary|compensation", "salary", "ожидания по зарплате"),
+    (r"(в каком|ваш|какой) город|где (вы )?(живёте|живете|проживаете)|город проживания|местоположение|location", "city", "город"),
+    (r"переезд|релокац|relocat", "relocation", "готовность к переезду"),
+    (r"гражданств|citizenship", "citizenship", "гражданство"),
+    (r"когда (вы )?(готовы|сможете) (выйти|приступить)|дата выхода|срок выхода|notice period|start date", "start_date", "дата выхода"),
+    (r"telegram|телеграм", "telegram", "Telegram"),
+    (r"ссылк.{0,15}(резюме|портфолио|github|linkedin)", "portfolio", "ссылка"),
+]
+
+
+def profile_answer(q, prof):
+    """Анкетный вопрос (зарплата, город, переезд…) — ответ из профиля без ИИ. None — нужен ИИ."""
+    if q.get("type") in ("letter",) or len(q.get("question", "")) > 220:
+        return None
+    text = q.get("question", "").lower()
+    for rx, key, label in PROFILE_Q:
+        if re.search(rx, text):
+            val = (prof.get(key) or "").strip()
+            if q.get("type") in ("radio", "checkbox"):
+                if not val:
+                    return None
+                hit = [o for o in q.get("options", []) if val.lower() in o.lower() or o.lower() in val.lower()]
+                return {"choice": hit[:1]} if hit else None
+            return {"text": val or f"[уточнить: {label}]"}
+    return None
 
 
 @app.get("/api/autofill")

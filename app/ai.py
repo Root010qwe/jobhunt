@@ -1,5 +1,6 @@
 """ИИ через локальный Claude Code (`claude -p`): мастер-резюме, адаптация под вакансию, письма."""
 import json
+import re
 import shutil
 import subprocess
 
@@ -8,35 +9,93 @@ from . import db, resume_model as rm
 CLAUDE = shutil.which("claude") or str(db.Path.home() / ".local/bin/claude")
 
 
-def model():
-    return (db.kv_get("ai", {}) or {}).get("model") or "sonnet"
+# Какая модель на какую задачу. Sonnet — где важно качество текста, Haiku — где задача простая.
+TASK_MODELS = {
+    "tailor": "sonnet",     # резюме и письмо под вакансию
+    "questions": "sonnet",  # ответы на анкету работодателя
+    "analyze": "haiku",     # разбор требований и вопросы-уточнения
+    "letter": "haiku",      # письма для массового отклика
+    "master": "sonnet",     # сборка мастер-резюме из файла (редко)
+    "edit": "haiku",        # правка мастер-резюме запросом
+    "fix": "haiku",         # починка испорченного JSON
+}
+MODELS = ("haiku", "sonnet", "opus")
+
+# Короткий системный промпт вместо промпта Claude Code: без него вызов не тянет описания
+# инструментов, MCP-серверов, CLAUDE.md и память — это ~25 тыс. токенов на каждый запрос.
+SYSTEM = ("Ты помощник кандидата в поиске работы: резюме, сопроводительные письма, ответы работодателю. "
+          "Пиши по-русски, если не попросили иначе. Строго соблюдай формат ответа, который просят в задаче.")
+LEAN = ["--system-prompt", SYSTEM, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+        "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence", "--no-chrome"]
 
 
-def ask(prompt, timeout=420, mdl=None):
+def model(task="tailor"):
+    cfg = db.kv_get("ai", {}) or {}
+    m = (cfg.get("models") or {}).get(task) or TASK_MODELS.get(task)
+    return m if m in MODELS else "sonnet"
+
+
+def _log_usage(task, mdl, d):
+    u = d.get("usage") or {}
+    tokens = sum(int(u.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+    db.run("INSERT INTO ai_usage(at,task,model,input_tokens,output_tokens,cost_usd) VALUES(?,?,?,?,?,?)",
+           (db.now(), task, mdl, tokens, int(u.get("output_tokens") or 0), float(d.get("total_cost_usd") or 0)))
+
+
+def ask(prompt, timeout=420, task="tailor", mdl=None):
+    mdl = mdl or model(task)
     try:
-        r = subprocess.run([CLAUDE, "-p", "--model", mdl or model(), "--output-format", "text"], input=prompt,
+        r = subprocess.run([CLAUDE, "-p", "--model", mdl, "--output-format", "json", *LEAN], input=prompt,
                            capture_output=True, text=True, timeout=timeout, cwd=str(db.DATA))
     except FileNotFoundError:
         raise RuntimeError("Не найден Claude Code (команда claude). Установите его и войдите в аккаунт.")
     except subprocess.TimeoutExpired:
         raise RuntimeError("Модель не ответила за отведённое время, попробуйте ещё раз.")
-    if r.returncode != 0:
+    if r.returncode != 0 and not r.stdout.strip().startswith("{"):
         raise RuntimeError((r.stderr or r.stdout or "ошибка claude").strip()[:400])
-    return r.stdout.strip()
+    try:
+        d = json.loads(r.stdout)
+    except ValueError:
+        return r.stdout.strip()
+    try:
+        _log_usage(task, mdl, d)
+    except Exception:  # noqa: BLE001 — учёт не должен ломать работу
+        pass
+    if d.get("is_error"):
+        raise RuntimeError(str(d.get("result") or "ошибка claude")[:400])
+    return (d.get("result") or "").strip()
 
 
-def ask_json(prompt, mdl=None):
-    out = ask(prompt, mdl=mdl)
+def ask_json(prompt, task="tailor", mdl=None):
+    out = ask(prompt, task=task, mdl=mdl)
     try:
         return rm.parse_json(out)
     except Exception:  # noqa: BLE001 — одна попытка починить ответ
-        fixed = ask("Верни только корректный JSON из этого ответа, без пояснений:\n\n" + out[:20000], mdl="haiku")
+        fixed = ask("Верни только корректный JSON из этого ответа, без пояснений:\n\n" + out[:20000], task="fix")
         return rm.parse_json(fixed)
+
+
+def js(o):
+    """Компактный JSON для промпта: без пробелов и пустых полей — меньше токенов."""
+    def clean(x):
+        if isinstance(x, dict):
+            return {k: clean(v) for k, v in x.items() if v not in ("", None, [], {})}
+        if isinstance(x, list):
+            return [clean(v) for v in x if v not in ("", None, [], {})]
+        return x
+    return json.dumps(clean(o), ensure_ascii=False, separators=(",", ":"))
+
+
+def clip(text, n):
+    """Текст вакансии без лишних пустых строк и не длиннее n знаков."""
+    t = re.sub(r"\n\s*\n+", "\n", text or "")
+    t = re.sub(r"[ \t]+", " ", t)
+    return t[:n]
 
 
 # ---------- мастер-резюме ----------
 def master_from_text(text):
-    return ask_json(f"""Перенеси резюме в структуру JSON. Это мастер-резюме: из него потом собираются версии под вакансии,
+    return ask_json(task="master", prompt=f"""Перенеси резюме в структуру JSON. Это мастер-резюме: из него потом собираются версии под вакансии,
 и оно должно выглядеть так же, как исходное.
 
 Правила:
@@ -59,13 +118,13 @@ def master_from_text(text):
 
 
 def edit_resume(data, request):
-    return ask_json(f"""Вот резюме в JSON. Внеси правку по просьбе кандидата, остальное оставь как есть.
+    return ask_json(task="edit", prompt=f"""Вот резюме в JSON. Внеси правку по просьбе кандидата, остальное оставь как есть.
 Не выдумывай факты, которых нет в резюме. Верни только JSON той же схемы.
 
 Просьба: {request}
 
 Резюме:
-{json.dumps(data, ensure_ascii=False)}""")
+{js(data)}""")
 
 
 # ---------- адаптация под вакансию ----------
@@ -107,7 +166,7 @@ def tailor(master, vacancy_text, company, role, profile, request=None, previous=
     if facts:
         extra += ("\nКандидат дополнительно сообщил о себе (это правда — используй в резюме и письме, где закрывает требования; "
                   "формулируй уверенно, без «изучаю» и «немного знаю», но не преувеличивай):\n" + "\n".join(f"- {f}" for f in facts) + "\n")
-    return ask_json(f"""Ты карьерный консультант, который адаптирует резюме под конкретную вакансию так, чтобы рекрутер
+    return ask_json(task="tailor", prompt=f"""Ты карьерный консультант, который адаптирует резюме под конкретную вакансию так, чтобы рекрутер
 за 10 секунд увидел совпадение с требованиями.
 
 {TAILOR_RULES}
@@ -115,12 +174,11 @@ def tailor(master, vacancy_text, company, role, profile, request=None, previous=
 {extra}
 Вакансия: {role} — {company}
 <<<
-{vacancy_text}
+{clip(vacancy_text, 7000)}
 >>>
 
-{'Предыдущая версия резюме' if previous else 'Мастер-резюме'} (JSON):
-{json.dumps(base, ensure_ascii=False)}
-{'' if not previous else chr(10) + 'Мастер-резюме, источник фактов (JSON):' + chr(10) + json.dumps(master, ensure_ascii=False)}
+{'Предыдущая версия резюме — правь её, новые факты бери только из неё и из сообщённого кандидатом' if previous else 'Мастер-резюме'} (JSON):
+{js(base)}
 
 {TAILOR_OUT}""")
 
@@ -128,7 +186,7 @@ def tailor(master, vacancy_text, company, role, profile, request=None, previous=
 def analyze(master, vacancy_text, company, role, facts):
     """Требования вакансии и что по ним есть в резюме; по пробелам — вопрос кандидату."""
     known = "\n".join(f"- {f}" for f in facts) or "—"
-    return ask_json(f"""Разбери вакансию для кандидата перед тем, как адаптировать его резюме.
+    return ask_json(task="analyze", prompt=f"""Разбери вакансию для кандидата перед тем, как адаптировать его резюме.
 
 1. Выпиши 5–9 главных требований и задач вакансии (обязательные и желательные), коротко, своими словами.
 2. Для каждого найди подтверждение в резюме или в известных фактах о кандидате.
@@ -141,20 +199,20 @@ def analyze(master, vacancy_text, company, role, facts):
 
 Вакансия: {role} — {company}
 <<<
-{vacancy_text}
+{clip(vacancy_text, 6000)}
 >>>
 
 Известные факты о кандидате (не из резюме, но правда):
 {known}
 
 Резюме (JSON):
-{json.dumps(master, ensure_ascii=False)}""", mdl="sonnet")
+{js(master)}""")
 
 
 def answer_questions(master, facts, vacancy_text, company, role, questions, profile):
     """Ответы на вопросы работодателя в форме отклика (анкета, тестовое)."""
     known = "\n".join(f"- {f}" for f in facts) or "—"
-    return ask_json(f"""Ты помогаешь кандидату ответить на вопросы работодателя в форме отклика на вакансию.
+    return ask_json(task="questions", prompt=f"""Ты помогаешь кандидату ответить на вопросы работодателя в форме отклика на вакансию.
 Ответы потом прочитает и поправит сам кандидат, поэтому пиши от его лица, на «я».
 
 Как писать:
@@ -177,11 +235,11 @@ def answer_questions(master, facts, vacancy_text, company, role, questions, prof
 
 Вакансия: {role} — {company}
 <<<
-{vacancy_text[:8000]}
+{clip(vacancy_text, 6000)}
 >>>
 
 Вопросы (JSON):
-{json.dumps(questions, ensure_ascii=False)}
+{js(questions)}
 
 Профиль: город {profile.get('city', '')}; ожидания по зарплате: {profile.get('salary', '') or 'не указаны'}; переезд: {profile.get('relocation', '') or 'не указано'}.
 
@@ -189,19 +247,19 @@ def answer_questions(master, facts, vacancy_text, company, role, questions, prof
 {known}
 
 Резюме кандидата (JSON):
-{json.dumps(master, ensure_ascii=False)}""", mdl="sonnet")
+{js(master)}""")
 
 
 def cover_letter(base_text, vacancy_text, company, role, profile):
     """Короткий путь для массового отклика: только письмо."""
     sign = " ".join(x for x in [profile.get("first_name"), profile.get("last_name")] if x)
-    return ask(f"""Напиши сопроводительное письмо под вакансию: 600–900 знаков, 3 абзаца, без штампов.
+    return ask(task="letter", prompt=f"""Напиши сопроводительное письмо под вакансию: 600–900 знаков, 3 абзаца, без штампов.
 Первый абзац — почему эта роль; второй — 2 факта из резюме, которые закрывают главные требования; третий — призыв к разговору.
 Ничего не выдумывай. Подпись: {sign}, {profile.get('phone', '')}, {profile.get('telegram', '')}. Верни только текст.
 
 Вакансия: {role} — {company}
 <<<
-{vacancy_text}
+{clip(vacancy_text, 6000)}
 >>>
 
 Резюме:

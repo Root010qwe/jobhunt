@@ -74,7 +74,7 @@
     try { localStorage.setItem('jh.tab', name); } catch (e) {}
     if (name === 'vac') loadVac();
     if (name === 'res') { loadResumes(); loadMaster(); }
-    if (name === 'prof') loadProfile();
+    if (name === 'prof') { loadProfile(); loadAI(); }
   }
   document.querySelectorAll('.tabs button').forEach(function (b) { b.addEventListener('click', function () { showTab(b.dataset.tab); }); });
 
@@ -789,7 +789,7 @@
   var PF = [
     ['last_name', 'Фамилия'], ['first_name', 'Имя'], ['middle_name', 'Отчество'], ['birth_date', 'Дата рождения', 'date'],
     ['email', 'Email', 'email'], ['phone', 'Телефон', 'tel'], ['telegram', 'Telegram'], ['city', 'Город'],
-    ['citizenship', 'Гражданство'], ['relocation', 'Переезд'], ['position', 'Желаемая должность'], ['salary', 'Ожидания по зарплате'],
+    ['citizenship', 'Гражданство'], ['relocation', 'Переезд'], ['start_date', 'Когда готов выйти'], ['position', 'Желаемая должность'], ['salary', 'Ожидания по зарплате'],
     ['english', 'Английский'], ['university', 'Образование', 'wide'], ['hh_url', 'Ссылка на резюме hh.ru', 'url'],
     ['linkedin', 'LinkedIn', 'url'], ['github', 'GitHub', 'url'], ['portfolio', 'Портфолио / сайт', 'url'],
     ['cover_template', 'Шаблон сопроводительного письма — {company}, {role}, {name} подставятся сами', 'area']
@@ -811,6 +811,31 @@
       $('#src-json').value = JSON.stringify(src, null, 1);
     });
   }
+  var TASKS = { tailor: 'Резюме и письмо под вакансию', questions: 'Ответы на вопросы работодателя', analyze: 'Разбор требований',
+    letter: 'Письма для массового отклика', master: 'Сборка мастер-резюме', edit: 'Правка мастер-резюме запросом' };
+  function loadAI() {
+    api('GET', '/api/settings').then(function (s) {
+      var m = (s.ai && s.ai.models) || {};
+      $('#ai-models').innerHTML = Object.keys(TASKS).map(function (k) {
+        return '<div class="f"><label for="m-' + k + '">' + TASKS[k] + '</label><select id="m-' + k + '" data-task="' + k + '">' +
+          ['haiku', 'sonnet', 'opus'].map(function (x) { return '<option' + (m[k] === x ? ' selected' : '') + '>' + x + '</option>'; }).join('') + '</select></div>';
+      }).join('');
+    });
+    api('GET', '/api/ai/usage?days=30').then(function (u) {
+      var t = u.total || {};
+      var rows = (u.by_task || []).map(function (r) {
+        return '<tr><td>' + esc(TASKS[r.task] || r.task) + '</td><td>' + esc(r.model) + '</td><td>' + r.calls + '</td><td>' + Math.round((r.tin || 0) / 1000) + ' тыс.</td><td>$' + (r.cost || 0).toFixed(2) + '</td></tr>';
+      }).join('');
+      $('#ai-usage').innerHTML = t.calls ? '<p class="hint">За 30 дней: ' + t.calls + ' ' + plural(t.calls, ['вызов', 'вызова', 'вызовов']) + ', ' + Math.round((t.tin || 0) / 1000) + ' тыс. токенов на входе, $' + (t.cost || 0).toFixed(2) +
+        ' по ценам API (при подписке это расход лимита, а не деньги).</p><table class="ut"><tr><th>Задача</th><th>Модель</th><th>Вызовов</th><th>Вход</th><th>Цена</th></tr>' + rows + '</table>'
+        : '<p class="hint">Расходы начнут считаться со следующего вызова ИИ.</p>';
+    });
+  }
+  $('#save-ai').addEventListener('click', function () {
+    var models = {};
+    document.querySelectorAll('#ai-models select').forEach(function (s) { models[s.dataset.task] = s.value; });
+    api('PUT', '/api/settings', { ai: { models: models } }).then(function () { toast('Модели сохранены'); });
+  });
   $('#pform').addEventListener('submit', function (e) {
     e.preventDefault();
     var d = Object.assign({}, profile);

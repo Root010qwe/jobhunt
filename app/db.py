@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS drafts (
   resume_id INTEGER,
   created_at TEXT
 );
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT, task TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL
+);
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   started_at TEXT, finished_at TEXT, found INTEGER DEFAULT 0, new INTEGER DEFAULT 0, log TEXT DEFAULT ''

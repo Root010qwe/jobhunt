@@ -171,3 +171,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--surfa
 .vrow .src { font-size: 0.75rem; }
 #vcompany { width: 16rem; max-width: 100%; }
 .toolbar .search { flex: 1 1 18rem; }
+.ut { width: 100%; border-collapse: collapse; font-size: 0.875rem; margin-top: 0.5rem; }
+.ut th, .ut td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
+.ut th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.f select { width: 100%; border: 1px solid var(--line); background: var(--surface-2); border-radius: 6px; padding: 0.5rem 0.6rem; }
